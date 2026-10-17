@@ -54,6 +54,19 @@ jobs:
           ctest --test-dir build -C Release -R source_test --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: DirectShow filter end-to-end test
+        run: ctest --test-dir build -C Release -R dshow_test --output-on-failure
+
+      # 32-bit applications on Windows 10 load the 32-bit DirectShow filter.
+      - name: Configure 32-bit
+        run: cmake -S . -B build32 -A Win32
+
+      - name: Build 32-bit
+        run: cmake --build build32 --config Release --parallel
+
+      - name: 32-bit tests
+        run: ctest --test-dir build32 -C Release -R "core_tests|dshow_test" --output-on-failure
+
       - name: Package
         shell: pwsh
         run: |
@@ -61,6 +74,7 @@ jobs:
           $lib = 'build\lib\Release'
           New-Item -ItemType Directory -Force dist, dist\sdk, dist\python | Out-Null
           Copy-Item "$bin\vcam.exe", "$bin\vcam-gui.exe", "$bin\vcamsource.dll", "$bin\vcam.dll" -Destination dist\
+          Copy-Item "$bin\vcamdshow.dll", 'build32\bin\Release\vcamdshow32.dll' -Destination dist\
           Copy-Item "$lib\vcam.lib", 'windows\sdk\include\vcam.h' -Destination dist\sdk\
           Copy-Item 'python\vcam.py', 'python\example.py' -Destination dist\python\
           Copy-Item README.md -Destination dist\

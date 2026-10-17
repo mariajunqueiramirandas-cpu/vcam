@@ -84,15 +84,16 @@ std::wstring ProducerMutexName(int index)
 
 bool RegReadString(HKEY root, const wchar_t* path, const wchar_t* name, std::wstring* value)
 {
+    // RRF_RT_REG_SZ also takes REG_EXPAND_SZ values, expanded. (Asking for
+    // RRF_RT_REG_EXPAND_SZ without RRF_NOEXPAND is ERROR_INVALID_PARAMETER.)
+    constexpr DWORD flags = RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY;
     DWORD bytes = 0;
-    if (RegGetValueW(root, path, name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, nullptr,
-                     &bytes) != ERROR_SUCCESS) {
+    if (RegGetValueW(root, path, name, flags, nullptr, nullptr, &bytes) != ERROR_SUCCESS) {
         return false;
     }
     std::wstring text(bytes / sizeof(wchar_t) + 1, L'\0');
     bytes = static_cast<DWORD>(text.size() * sizeof(wchar_t));
-    if (RegGetValueW(root, path, name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_SUBKEY_WOW6464KEY, nullptr,
-                     text.data(), &bytes) != ERROR_SUCCESS) {
+    if (RegGetValueW(root, path, name, flags, nullptr, text.data(), &bytes) != ERROR_SUCCESS) {
         return false;
     }
     text.resize(wcslen(text.c_str()));

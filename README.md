@@ -186,10 +186,14 @@ with vcam.Camera(fmt="bgr") as cam:       # an OpenCV frame is BGR
 
 - **Cameras** are registered once, for all users and with system lifetime, so they exist whether or not anything
   feeds them. vcam tags each camera, and an elevated `vcam` re-registers any camera Windows dropped.
-- **On Windows 10**, each camera is a DirectShow capture filter (`vcamdshow.dll`, and `vcamdshow32.dll` for 32-bit
-  apps) that apps load themselves. It offers NV12, YUY2, I420 and RGB32 at the same sizes. Several apps can
-  use a camera at once: the first one sets the format, and the others convert from it. Producer and apps meet
-  in the user's session, so this works without administrator rights.
+- **On Windows 10**, which has no virtual camera API, each camera is a DirectShow capture device
+  (`vcamdshow.dll`, and `vcamdshow32.dll` for 32-bit apps) that apps load themselves. Desktop apps that use
+  DirectShow see it: Zoom, Teams, Skype, Discord, OBS, and Chrome, Edge and Firefox, so Meet and other web
+  apps work too. The Windows Camera app and other Store apps do not, the same as with OBS Virtual Camera. Each
+  camera offers every standard size in NV12, YUY2, I420 and RGB32 at 30 and 60 fps. Several apps can use a
+  camera at once: the first one sets the format, and the others convert from it. Producer and apps meet in
+  the user's session, so this works without administrator rights. On Windows 11,
+  `vcam install --backend directshow` forces this backend.
 - **The media source** (`vcamsource.dll`) runs inside Frame Server as LOCAL SERVICE. Each camera advertises
   NV12, YUY2 and RGB32 at standard sizes. While an app streams, a high-priority thread delivers samples at the
   negotiated rate. A producer frame goes out as soon as it arrives, and the last one repeats when the producer is
@@ -260,3 +264,7 @@ The portable core and its tests also build on Linux (`cmake -S . -B build && cma
   sample allocator, start, sample requests, format switches and shutdown. A real producer feeds it, and the test
   checks colours, letterboxing, mirroring, re-rendering after a format change, the 30 fps pacing and the
   placeholder.
+- `dshow_test`: loads `vcamdshow.dll` in-process and connects its pin to a pretend application's pin, the way a
+  DirectShow graph does: capabilities, all four formats (RGB32 bottom-up), a renderer asking for a wider stride,
+  format changes and reconnection, pacing, the placeholder, and two applications sharing a camera. CI runs it in
+  64-bit and 32-bit builds.
