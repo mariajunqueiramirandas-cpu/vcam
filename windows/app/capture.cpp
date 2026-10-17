@@ -12,6 +12,7 @@
 #include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#include <winrt/Windows.Security.Authorization.AppCapabilityAccess.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -327,9 +328,14 @@ private:
         } catch (const winrt::hresult_error&) {
         }
         try {
-            // Windows 11: no yellow border around what is being captured.
+            // Windows 11: no yellow border around what is being captured. The
+            // request is granted without a prompt to unpackaged apps.
             if (winrt::Windows::Foundation::Metadata::ApiInformation::IsPropertyPresent(
                     L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsBorderRequired")) {
+                if (!borderless_requested_) {
+                    borderless_requested_ = true;
+                    wgc::GraphicsCaptureAccess::RequestAccessAsync(wgc::GraphicsCaptureAccessKind::Borderless).get();
+                }
                 session_.IsBorderRequired(false);
             }
         } catch (const winrt::hresult_error&) {
@@ -438,6 +444,7 @@ private:
     std::atomic<bool> item_closed_{false};
     GpuScaler scaler_;
     bool gpu_failed_ = false;
+    bool borderless_requested_ = false;
     ComPtr<ID3D11Texture2D> staging_;
     int staging_w_ = 0, staging_h_ = 0;
     bool staging_mapped_ = false;
