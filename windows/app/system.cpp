@@ -644,6 +644,7 @@ int CmdInstall(const InstallOptions& options)
     config.install_dir = dir;
     config.cameras = options.cameras;
     config.backend = backend;
+    config.managed = options.managed;
     for (int i = 0; i < win::kMaxCameras; i++) {
         if (i < static_cast<int>(options.names.size()) && !options.names[i].empty()) {
             config.names[i] = options.names[i];
@@ -971,6 +972,48 @@ int CmdConfig(Args& args)
     return 0;
 }
 
+bool SetPlaceholderImage(const std::wstring& file, std::string* error)
+{
+    std::vector<uint8_t> pixels;
+    int w = 0, h = 0;
+    if (!LoadImageBgra(file, &pixels, &w, &h, error)) {
+        return false;
+    }
+    // Store at most 1920x1080; the camera scales it to whatever it streams.
+    const Placement fit = ComputePlacement(w, h, std::min(w, 1920), std::min(h, 1080), ScaleMode::Fit, false);
+    std::vector<uint8_t> stored(static_cast<size_t>(fit.dst_w) * fit.dst_h * 4);
+    Converter converter;
+    ConvertOptions options;
+    options.scale = ScaleMode::Stretch;
+    converter.Convert(MakeView(PixelFormat::BGRA, w, h, pixels.data()),
+                      MakeSpan(PixelFormat::BGRA, fit.dst_w, fit.dst_h, stored.data()), options);
+    CreateDataDirectories();
+    const std::wstring path = win::DataDirectory() + L"\\placeholder.vcamimg";
+    if (!win::SavePlaceholderImage(path, stored.data(), static_cast<uint32_t>(fit.dst_w),
+                                   static_cast<uint32_t>(fit.dst_h))) {
+        *error = "writing " + Utf8(path) + " failed: " + ErrorText(GetLastError());
+        return false;
+    }
+    win::Config config = win::LoadConfig();
+    config.placeholder = path;
+    if (!win::SaveConfig(config)) {
+        *error = "saving the configuration failed";
+        return false;
+    }
+    return true;
+}
+
+bool ResetPlaceholderImage(std::string* error)
+{
+    win::Config config = win::LoadConfig();
+    config.placeholder.clear();
+    if (!win::SaveConfig(config)) {
+        *error = "saving the configuration failed";
+        return false;
+    }
+    return true;
+}
+
 int CmdPlaceholder(Args& args)
 {
     const bool reset = args.Flag("reset");
@@ -982,36 +1025,9 @@ int CmdPlaceholder(Args& args)
     if (!RequireElevation("vcam placeholder")) {
         return 1;
     }
-    win::Config config = win::LoadConfig();
-    if (reset) {
-        config.placeholder.clear();
-    } else {
-        std::vector<uint8_t> pixels;
-        int w = 0, h = 0;
-        std::string error;
-        if (!LoadImageBgra(Wide(file), &pixels, &w, &h, &error)) {
-            PrintError("%s\n", error.c_str());
-            return 1;
-        }
-        // Store at most 1920x1080; the camera scales it to whatever it streams.
-        const Placement fit = ComputePlacement(w, h, std::min(w, 1920), std::min(h, 1080), ScaleMode::Fit, false);
-        std::vector<uint8_t> stored(static_cast<size_t>(fit.dst_w) * fit.dst_h * 4);
-        Converter converter;
-        ConvertOptions options;
-        options.scale = ScaleMode::Stretch;
-        converter.Convert(MakeView(PixelFormat::BGRA, w, h, pixels.data()),
-                          MakeSpan(PixelFormat::BGRA, fit.dst_w, fit.dst_h, stored.data()), options);
-        CreateDataDirectories();
-        const std::wstring path = win::DataDirectory() + L"\\placeholder.vcamimg";
-        if (!win::SavePlaceholderImage(path, stored.data(), static_cast<uint32_t>(fit.dst_w),
-                                       static_cast<uint32_t>(fit.dst_h))) {
-            PrintError("writing %s failed: %s\n", Utf8(path).c_str(), ErrorText(GetLastError()).c_str());
-            return 1;
-        }
-        config.placeholder = path;
-    }
-    if (!win::SaveConfig(config)) {
-        PrintError("saving the configuration failed\n");
+    std::string error;
+    if (!(reset ? ResetPlaceholderImage(&error) : SetPlaceholderImage(Wide(file), &error))) {
+        PrintError("%s\n", error.c_str());
         return 1;
     }
     Print(reset ? "The built-in placeholder is back.\n" : "Placeholder set.\n");

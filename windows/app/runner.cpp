@@ -193,7 +193,7 @@ void SourceRunner::Run(std::promise<std::string>* started)
             target.fps = 30;
         }
         const int64_t now = win::NowTicks();
-        if (st.consumer_active || options_.always) {
+        if (st.consumer_active || options_.always || keep_alive_) {
             unwatched_since = 0;
         } else if (!unwatched_since) {
             unwatched_since = now;

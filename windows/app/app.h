@@ -84,6 +84,9 @@ int CmdUninstall(bool managed = false);
 int CmdStatus();
 int CmdConfig(Args& args);
 int CmdPlaceholder(Args& args);
+// The picture apps see while nothing feeds a camera (needs administrator rights).
+bool SetPlaceholderImage(const std::wstring& file, std::string* error);
+bool ResetPlaceholderImage(std::string* error);
 int CmdRestartFrameServer();
 int CmdAutostart(Args& args, int argc, wchar_t** argv);
 
@@ -193,6 +196,8 @@ public:
     // the camera's current size (0 when no application asked yet).
     using FrameTap = std::function<void(const Frame& frame, const Target& target)>;
     void SetTap(FrameTap tap);
+    // Keep producing although no application watches (the GUI's preview is visible).
+    void SetKeepAlive(bool keep) { keep_alive_ = keep; }
 
 private:
     void Run(std::promise<std::string>* started);
@@ -201,6 +206,7 @@ private:
     SourceOptions options_;
     std::thread thread_;
     std::atomic<bool> stop_{false};
+    std::atomic<bool> keep_alive_{false};
     mutable std::mutex lock_;  // everything below
     RunnerStats stats_;
     std::string name_;

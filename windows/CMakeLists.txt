@@ -70,3 +70,47 @@ add_executable(source_test ${PROJECT_SOURCE_DIR}/tests/windows/source_test.cpp)
 target_link_libraries(source_test PRIVATE vcam_producer mfplat mfuuid ole32)
 add_dependencies(source_test vcamsource)
 add_test(NAME source_test COMMAND source_test $<TARGET_FILE:vcamsource>)
+
+# --- VCam, the GUI -------------------------------------------------------------
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    # The WebView2 SDK from NuGet, pinned and checked; or set VCAM_WEBVIEW2_DIR
+    # to an extracted package to build offline.
+    set(VCAM_WEBVIEW2_VERSION 1.0.3800.47)
+    set(VCAM_WEBVIEW2_SHA256 56c9f26bdd07916a2d1949fb58a5c7e434dfa1173577dca879206050c4e718db)
+    if(NOT VCAM_WEBVIEW2_DIR)
+        set(VCAM_WEBVIEW2_DIR ${CMAKE_BINARY_DIR}/_deps/webview2-${VCAM_WEBVIEW2_VERSION})
+        if(NOT EXISTS ${VCAM_WEBVIEW2_DIR}/build/native/include/WebView2.h)
+            set(webview2_package ${CMAKE_BINARY_DIR}/_deps/webview2-${VCAM_WEBVIEW2_VERSION}.nupkg)
+            file(DOWNLOAD
+                https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/${VCAM_WEBVIEW2_VERSION}/microsoft.web.webview2.${VCAM_WEBVIEW2_VERSION}.nupkg
+                ${webview2_package}
+                EXPECTED_HASH SHA256=${VCAM_WEBVIEW2_SHA256} TLS_VERIFY ON STATUS webview2_status)
+            list(GET webview2_status 0 webview2_code)
+            if(NOT webview2_code EQUAL 0)
+                message(FATAL_ERROR "Downloading the WebView2 SDK failed: ${webview2_status}")
+            endif()
+            file(ARCHIVE_EXTRACT INPUT ${webview2_package} DESTINATION ${VCAM_WEBVIEW2_DIR})
+        endif()
+    endif()
+
+    # The interface (gui/ui) and the icon are compiled into the executable.
+    set(VCAM_GUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gui)
+    configure_file(gui/vcam-gui.rc.in ${CMAKE_CURRENT_BINARY_DIR}/vcam-gui.rc @ONLY)
+    set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/vcam-gui.rc PROPERTIES OBJECT_DEPENDS
+        "${VCAM_GUI_DIR}/ui/index.html;${VCAM_GUI_DIR}/ui/app.css;${VCAM_GUI_DIR}/ui/app.js;${VCAM_GUI_DIR}/vcam.ico")
+    add_executable(vcam_gui WIN32
+        gui/host.cpp
+        gui/json.cpp
+        gui/main.cpp
+        gui/platform.cpp
+        gui/vcam-gui.manifest
+        ${CMAKE_CURRENT_BINARY_DIR}/vcam-gui.rc
+    )
+    set_target_properties(vcam_gui PROPERTIES OUTPUT_NAME vcam-gui)
+    target_include_directories(vcam_gui PRIVATE gui ${VCAM_WEBVIEW2_DIR}/build/native/include)
+    target_link_libraries(vcam_gui PRIVATE vcam_tool ${VCAM_WEBVIEW2_DIR}/build/native/x64/WebView2LoaderStatic.lib
+                          shlwapi version comctl32)
+    # The manifest above carries the execution level.
+    target_link_options(vcam_gui PRIVATE /MANIFESTUAC:NO)
+    vcam_version_rc(vcam_gui vcam-gui.exe "VCam" VFT_APP)
+endif()

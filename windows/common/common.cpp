@@ -207,6 +207,9 @@ Config LoadConfig()
         value == static_cast<DWORD>(Backend::DirectShow)) {
         c.backend = Backend::DirectShow;
     }
+    if (RegReadDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Managed", &value)) {
+        c.managed = value != 0;
+    }
     return c;
 }
 
@@ -224,6 +227,7 @@ bool SaveConfig(const Config& c)
     ok &= RegWriteDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Logging", c.logging ? 1 : 0) == ERROR_SUCCESS;
     ok &= RegWriteString(HKEY_LOCAL_MACHINE, kRegistryKey, L"Placeholder", c.placeholder) == ERROR_SUCCESS;
     ok &= RegWriteDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Backend", static_cast<DWORD>(c.backend)) == ERROR_SUCCESS;
+    ok &= RegWriteDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Managed", c.managed ? 1 : 0) == ERROR_SUCCESS;
     return ok;
 }
 

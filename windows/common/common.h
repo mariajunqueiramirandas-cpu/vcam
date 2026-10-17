@@ -65,6 +65,7 @@ struct Config {
     bool logging = false;                 // write logs to %ProgramData%\vcam\logs
     std::wstring placeholder;             // image shown with no producer (.vcamimg), empty = built in
     Backend backend = Backend::MediaFoundation;
+    bool managed = false;  // installed by the setup program, which owns the files and the Installed apps entry
 };
 
 Config LoadConfig();
