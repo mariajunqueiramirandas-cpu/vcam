@@ -11,12 +11,51 @@ function(vcam_version_rc target file_name description file_type)
     target_sources(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${target}_version.rc)
 endfunction()
 
-# Pieces shared by the media source, the SDK and the tool.
+# A 32-bit build (cmake -A Win32) makes only the DirectShow filter for 32-bit
+# applications, and what its test needs.
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(VCAM_DSHOW_NAME vcamdshow32)
+else()
+    set(VCAM_DSHOW_NAME vcamdshow)
+endif()
+
+# Pieces shared by the camera backends, the SDK and the tool.
 add_library(vcam_win STATIC common/common.cpp common/feed.cpp)
 target_include_directories(vcam_win PUBLIC common)
 target_link_libraries(vcam_win PUBLIC vcam_core advapi32 ole32)
 
-# The media source Frame Server loads for each camera.
+# Producer SDK as a static library, for the vcam tool and the tests.
+add_library(vcam_producer STATIC sdk/producer.cpp)
+target_include_directories(vcam_producer PUBLIC sdk/include)
+target_compile_definitions(vcam_producer PUBLIC VCAM_STATIC)
+target_link_libraries(vcam_producer PUBLIC vcam_win)
+
+# The DirectShow capture filter: the cameras on Windows 10, one build per
+# architecture (32-bit applications load vcamdshow32.dll).
+add_library(vcamdshow SHARED
+    dshow/dllmain.cpp
+    dshow/filter.cpp
+    dshow/media_types.cpp
+    dshow/pin.cpp
+    dshow/vcamdshow.def
+)
+set_target_properties(vcamdshow PROPERTIES OUTPUT_NAME ${VCAM_DSHOW_NAME})
+target_link_libraries(vcamdshow PRIVATE vcam_win strmiids ole32 oleaut32 uuid avrt)
+vcam_version_rc(vcamdshow ${VCAM_DSHOW_NAME}.dll "vcam camera (DirectShow capture filter)" VFT_DLL)
+
+# End-to-end test: connects the filter's pin to a pretend application's pin.
+add_executable(dshow_test ${PROJECT_SOURCE_DIR}/tests/windows/dshow_test.cpp)
+target_link_libraries(dshow_test PRIVATE vcam_producer strmiids ole32 oleaut32 uuid)
+add_dependencies(dshow_test vcamdshow)
+add_test(NAME dshow_test COMMAND dshow_test $<TARGET_FILE:vcamdshow>)
+
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    return()
+endif()
+
+# --- 64-bit only below ------------------------------------------------------------
+
+# The media source Frame Server loads for each camera (Windows 11).
 add_library(vcamsource SHARED
     source/activate.cpp
     source/dllmain.cpp
@@ -27,13 +66,7 @@ add_library(vcamsource SHARED
 target_link_libraries(vcamsource PRIVATE vcam_win mfplat mfsensorgroup avrt)
 vcam_version_rc(vcamsource vcamsource.dll "vcam media source (loaded by Windows Frame Server)" VFT_DLL)
 
-# Producer SDK: a static library for the vcam tool, and vcam.dll + vcam.h for
-# everyone else (C ABI).
-add_library(vcam_producer STATIC sdk/producer.cpp)
-target_include_directories(vcam_producer PUBLIC sdk/include)
-target_compile_definitions(vcam_producer PUBLIC VCAM_STATIC)
-target_link_libraries(vcam_producer PUBLIC vcam_win)
-
+# vcam.dll + vcam.h for everyone else (C ABI).
 add_library(vcam_sdk SHARED sdk/producer.cpp)
 set_target_properties(vcam_sdk PROPERTIES OUTPUT_NAME vcam)
 target_include_directories(vcam_sdk PUBLIC sdk/include)
