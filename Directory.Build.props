@@ -2,10 +2,12 @@
   <!--
     With the WDK installed (Visual Studio + WDK extension) nothing here applies.
     Without it, `nuget restore packages.config -PackagesDirectory packages` pulls the
-    WDK/SDK as NuGet packages and these imports point the build at them.
+    WDK/SDK as NuGet packages and these imports point the build at them. The WDK package
+    carries MSBuild tasks for one Visual Studio version only: 10.0.28000.x is for Visual
+    Studio 2026 (what the CI runner has), 10.0.26100.x is for Visual Studio 2022.
   -->
   <PropertyGroup>
-    <WdkPackageVersion>10.0.26100.6584</WdkPackageVersion>
+    <WdkPackageVersion>10.0.28000.2526</WdkPackageVersion>
     <WdkPackagesDir>$(MSBuildThisFileDirectory)packages\</WdkPackagesDir>
   </PropertyGroup>
   <Import Project="$(WdkPackagesDir)Microsoft.Windows.WDK.x64.$(WdkPackageVersion)\build\native\Microsoft.Windows.WDK.x64.props"
