@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    With the WDK installed (Visual Studio + WDK extension) nothing here applies.
+    Without it, `nuget restore packages.config -PackagesDirectory packages` pulls the
+    WDK/SDK as NuGet packages and these imports point the build at them.
+  -->
+  <PropertyGroup>
+    <WdkPackageVersion>10.0.26100.6584</WdkPackageVersion>
+    <WdkPackagesDir>$(MSBuildThisFileDirectory)packages\</WdkPackagesDir>
+  </PropertyGroup>
+  <Import Project="$(WdkPackagesDir)Microsoft.Windows.WDK.x64.$(WdkPackageVersion)\build\native\Microsoft.Windows.WDK.x64.props"
+          Condition="Exists('$(WdkPackagesDir)Microsoft.Windows.WDK.x64.$(WdkPackageVersion)\build\native\Microsoft.Windows.WDK.x64.props') and '$(Platform)' == 'x64'" />
+  <Import Project="$(WdkPackagesDir)Microsoft.Windows.SDK.CPP.x64.$(WdkPackageVersion)\build\native\Microsoft.Windows.SDK.cpp.x64.props"
+          Condition="Exists('$(WdkPackagesDir)Microsoft.Windows.SDK.CPP.x64.$(WdkPackageVersion)\build\native\Microsoft.Windows.SDK.cpp.x64.props') and '$(Platform)' == 'x64'" />
+  <Import Project="$(WdkPackagesDir)Microsoft.Windows.SDK.CPP.$(WdkPackageVersion)\build\native\Microsoft.Windows.SDK.cpp.props"
+          Condition="Exists('$(WdkPackagesDir)Microsoft.Windows.SDK.CPP.$(WdkPackageVersion)\build\native\Microsoft.Windows.SDK.cpp.props')" />
+</Project>
