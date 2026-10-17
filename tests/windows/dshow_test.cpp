@@ -76,7 +76,18 @@ public:
                                            reinterpret_cast<void**>(&inner_))),
                 "CLSID_MemoryAllocator");
     }
-    ~TypeChangingAllocator() { inner_->Release(); }
+    ~TypeChangingAllocator() { Free(); }
+
+    // Releases the system allocator. Called before CoUninitialize, which may
+    // unload quartz.dll: releasing it afterwards (from the destructor, at the
+    // end of main) would call into unloaded code.
+    void Free()
+    {
+        if (inner_) {
+            inner_->Release();
+            inner_ = nullptr;
+        }
+    }
 
     void ChangeTypeOnNextSample(const AM_MEDIA_TYPE& mt)
     {
@@ -953,6 +964,7 @@ int main(int argc, char** argv)
     if (clock) {
         clock->Release();
     }
+    allocator.Free();
 
     CoUninitialize();
     printf(g_failures ? "%d FAILURES\n" : "all DirectShow tests passed\n", g_failures);
