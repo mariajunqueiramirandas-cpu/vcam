@@ -192,6 +192,13 @@ void SourceRunner::Run(std::promise<std::string>* started)
         if (target.fps <= 0) {
             target.fps = 30;
         }
+        if (target.width <= 0 || target.height <= 0) {
+            // No application asked yet (a preview, or --always): 720p keeps screen
+            // capture scaled on the GPU instead of copying whole screens.
+            target.width = 1280;
+            target.height = 720;
+            target.format = PixelFormat::NV12;
+        }
         const int64_t now = win::NowTicks();
         if (st.consumer_active || options_.always || keep_alive_) {
             unwatched_since = 0;
