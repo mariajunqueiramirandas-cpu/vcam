@@ -23,6 +23,11 @@
 
 #include "vcam/format.h"
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)  // padded because of alignas: intended, it keeps sides on separate cache lines
+#endif
+
 namespace vcam {
 namespace shm {
 
@@ -91,7 +96,8 @@ struct alignas(64) SlotHeader {
     uint32_t pitch[3];
     uint32_t data_bytes;
     uint32_t flags;
-    int64_t timestamp;  // capture time in clock ticks, 0 if unknown
+    uint32_t content[4];  // x, y, width, height of the picture inside padding; all 0 = whole frame
+    int64_t timestamp;    // capture time in clock ticks, 0 if unknown
     uint64_t frame;
 };
 
@@ -99,6 +105,13 @@ static_assert(sizeof(Header) <= kHeaderBytes, "header too large");
 static_assert(sizeof(SlotHeader) <= kSlotHeaderBytes, "slot header too large");
 
 }  // namespace shm
+}  // namespace vcam
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+namespace vcam {
 
 // Pixel bytes one slot needs to hold any format up to max_width x max_height.
 uint64_t SlotCapacityFor(uint32_t max_width, uint32_t max_height);
@@ -114,6 +127,9 @@ bool LayoutSlot(PixelFormat format, uint32_t width, uint32_t height, shm::SlotHe
 // Checks a (local copy of a) slot header against the slot capacity and, on
 // success, builds a view of its pixels at `data`.
 bool ValidateSlot(const shm::SlotHeader& slot, uint64_t capacity, const uint8_t* data, ImageView* view);
+
+// The picture area of a validated slot (the whole frame unless it was padded).
+ImageView SlotContent(const shm::SlotHeader& slot, const ImageView& view);
 
 bool ProducerAlive(const shm::Header* header, int64_t now);
 bool ConsumerStreaming(const shm::Header* header, int64_t now);

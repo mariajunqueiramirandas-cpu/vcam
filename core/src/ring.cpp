@@ -92,6 +92,15 @@ bool ValidateSlot(const SlotHeader& slot, uint64_t capacity, const uint8_t* data
     return true;
 }
 
+ImageView SlotContent(const SlotHeader& slot, const ImageView& view)
+{
+    const uint64_t x = slot.content[0], y = slot.content[1], w = slot.content[2], h = slot.content[3];
+    if (w == 0 || h == 0 || x + w > slot.width || y + h > slot.height) {
+        return view;
+    }
+    return CropView(view, static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h));
+}
+
 bool ProducerAlive(const Header* h, int64_t now)
 {
     return h && AtomicLoad(h->producer_pid) != 0 &&
@@ -170,6 +179,9 @@ void Ring::CopySlotHeader(const SlotHeader* from, SlotHeader* to)
     }
     to->data_bytes = AtomicLoad(from->data_bytes, r);
     to->flags = AtomicLoad(from->flags, r);
+    for (int i = 0; i < 4; i++) {
+        to->content[i] = AtomicLoad(from->content[i], r);
+    }
     to->timestamp = AtomicLoad(from->timestamp, r);
     to->frame = AtomicLoad(from->frame, r);
 }
@@ -206,6 +218,9 @@ void Ring::CommitWrite(const WriteTarget& t, const SlotHeader& info)
     }
     AtomicStore(slot->data_bytes, info.data_bytes, r);
     AtomicStore(slot->flags, info.flags, r);
+    for (int i = 0; i < 4; i++) {
+        AtomicStore(slot->content[i], info.content[i], r);
+    }
     AtomicStore(slot->timestamp, info.timestamp, r);
     AtomicStore(slot->frame, t.frame, r);
     AtomicStore(slot->seq, 2 * t.frame);

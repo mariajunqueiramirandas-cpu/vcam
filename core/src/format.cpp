@@ -1,5 +1,6 @@
 #include "vcam/format.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -184,6 +185,44 @@ ImageSpan MakeSpan(PixelFormat format, int width, int height, uint8_t* data)
 ImageView MakeView(PixelFormat format, int width, int height, const uint8_t* data)
 {
     return MakeSpan(format, width, height, const_cast<uint8_t*>(data)).view();
+}
+
+ImageView CropView(const ImageView& view, int x, int y, int width, int height)
+{
+    if (IsYuv(view.format)) {
+        x &= ~1;
+        y &= ~1;
+    }
+    x = std::clamp(x, 0, std::max(view.width - 1, 0));
+    y = std::clamp(y, 0, std::max(view.height - 1, 0));
+    width = std::clamp(width, 1, view.width - x);
+    height = std::clamp(height, 1, view.height - y);
+    ImageView v = view;
+    v.width = width;
+    v.height = height;
+    auto offset = [](const uint8_t* p, int pitch, int row, int bytes) {
+        return p ? p + static_cast<ptrdiff_t>(pitch) * row + bytes : p;
+    };
+    switch (view.format) {
+    case PixelFormat::NV12:
+        v.plane[0] = offset(view.plane[0], view.pitch[0], y, x);
+        v.plane[1] = offset(view.plane[1], view.pitch[1], y / 2, x);
+        break;
+    case PixelFormat::I420:
+        v.plane[0] = offset(view.plane[0], view.pitch[0], y, x);
+        v.plane[1] = offset(view.plane[1], view.pitch[1], y / 2, x / 2);
+        v.plane[2] = offset(view.plane[2], view.pitch[2], y / 2, x / 2);
+        break;
+    case PixelFormat::YUY2:
+    case PixelFormat::UYVY: v.plane[0] = offset(view.plane[0], view.pitch[0], y, x * 2); break;
+    case PixelFormat::BGRA:
+    case PixelFormat::RGBA: v.plane[0] = offset(view.plane[0], view.pitch[0], y, x * 4); break;
+    case PixelFormat::BGR24:
+    case PixelFormat::RGB24: v.plane[0] = offset(view.plane[0], view.pitch[0], y, x * 3); break;
+    case PixelFormat::Gray8: v.plane[0] = offset(view.plane[0], view.pitch[0], y, x); break;
+    default: break;
+    }
+    return v;
 }
 
 namespace {

@@ -6,51 +6,56 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  core-linux:
+    # The portable core (conversion, scaling, shared-memory ring, pacing) is
+    # tested on Linux too: different compiler, sanitizers.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with sanitizers
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+          cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install WDK (NuGet, only if the runner doesn't already have one)
-        shell: pwsh
-        run: |
-          $wdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include\*\km\wdm.h" -ErrorAction SilentlyContinue
-          if ($wdk) {
-            "WDK already installed: $($wdk.FullName)"
-          } else {
-            "No WDK on this runner; restoring from NuGet (see Directory.Build.props)."
-            nuget restore packages.config -PackagesDirectory packages
-          }
-
-      - uses: microsoft/setup-msbuild@v2
-        with:
-          msbuild-architecture: x64
+      - name: Configure
+        run: cmake -S . -B build -A x64
 
       - name: Build
-        run: msbuild vcam.sln -m -p:Configuration=Release -p:Platform=x64 -v:m -bl:build.binlog
+        run: cmake --build build --config Release --parallel
 
-      - name: Collect the installable package
+      - name: Core tests
+        run: ctest --test-dir build -C Release -R core_tests --output-on-failure
+
+      - name: Media source end-to-end test
         shell: pwsh
         run: |
-          $files = @(
-            'driver\x64\Release\vcam\vcam.sys'
-            'driver\x64\Release\vcam\vcam.inf'
-            'driver\x64\Release\vcam\vcam.cat'
-            'bin\x64\Release\vcamctl.exe'
-            'scripts\install.ps1'
-            'scripts\uninstall.ps1'
-          )
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item -Path $files -Destination dist\
-          Get-ChildItem dist | Select-Object -ExpandProperty FullName
+          # Windows Server only has Media Foundation as an optional feature.
+          if (-not (Test-Path "$env:windir\System32\mfplat.dll")) {
+            Install-WindowsFeature Server-Media-Foundation | Out-Host
+          }
+          ctest --test-dir build -C Release -R source_test --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = 'build\windows\Release'
+          New-Item -ItemType Directory -Force dist, dist\sdk, dist\python | Out-Null
+          Copy-Item "$out\vcam.exe", "$out\vcamsource.dll" -Destination dist\
+          Copy-Item "$out\vcam.dll", "$out\vcam.lib", 'windows\sdk\include\vcam.h' -Destination dist\sdk\
+          Copy-Item 'python\vcam.py', 'python\example.py' -Destination dist\python\
+          Copy-Item README.md -Destination dist\
+          Get-ChildItem -Recurse dist | Select-Object -ExpandProperty FullName
 
       - uses: actions/upload-artifact@v4
         with:
           name: vcam-x64
           path: dist/**
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build-log
-          path: build.binlog

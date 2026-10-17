@@ -10,8 +10,8 @@ if(MSVC)
     # Static CRT: the media source loads inside Windows services and the tools
     # must run without the VC++ redistributable.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    add_compile_options(/W4 /WX /permissive- /utf-8 /Zc:__cplusplus /guard:cf)
-    add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+    add_compile_options(/W4 /WX /permissive- /utf-8 /Zc:__cplusplus /guard:cf /external:anglebrackets /external:W0)
+    add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
     add_link_options(/guard:cf /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)

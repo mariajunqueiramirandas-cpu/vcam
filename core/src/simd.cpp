@@ -131,7 +131,7 @@ void HorizontalBgra(const uint8_t* in, const int32_t* start, const int32_t* pair
             const __m128i px = _mm_unpacklo_epi8(_mm_shuffle_epi8(Load8(p + 8 * j), shuffle), zero);
             acc = _mm_add_epi32(acc, _mm_madd_epi16(px, _mm_set1_epi32(wp[j])));
         }
-        if (Out16) {
+        if constexpr (Out16) {
             acc = _mm_srai_epi32(acc, 7);
             _mm_storel_epi64(reinterpret_cast<__m128i*>(static_cast<uint16_t*>(out) + 4 * x),
                              _mm_packus_epi32(acc, acc));
@@ -162,7 +162,7 @@ int HorizontalPlane(const uint8_t* in, int src_w, const int32_t* start, const in
                 for (int k = 0; k < 8 && start[x + j] + k < src_w; k++) {
                     acc += w[k] * p[k];
                 }
-                if (Out16) {
+                if constexpr (Out16) {
                     static_cast<uint16_t*>(out)[x + j] = static_cast<uint16_t>(acc >> 7);
                 } else {
                     static_cast<uint8_t*>(out)[x + j] = static_cast<uint8_t>(acc >> 14);
@@ -179,7 +179,7 @@ int HorizontalPlane(const uint8_t* in, int src_w, const int32_t* start, const in
         }
         __m128i t = _mm_hadd_epi32(_mm_hadd_epi32(s[0], s[1]), _mm_hadd_epi32(s[2], s[3]));
         t = _mm_add_epi32(t, round);
-        if (Out16) {
+        if constexpr (Out16) {
             t = _mm_srai_epi32(t, 7);
             _mm_storel_epi64(reinterpret_cast<__m128i*>(static_cast<uint16_t*>(out) + x), _mm_packus_epi32(t, t));
         } else {

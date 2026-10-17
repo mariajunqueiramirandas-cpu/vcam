@@ -89,6 +89,10 @@ struct ImageSpan {
 ImageSpan MakeSpan(PixelFormat format, int width, int height, uint8_t* data);
 ImageView MakeView(PixelFormat format, int width, int height, const uint8_t* data);
 
+// A rectangle of `view`. For chroma-subsampled formats x and y are rounded
+// down to even values. The rectangle is clamped to the image.
+ImageView CropView(const ImageView& view, int x, int y, int width, int height);
+
 // Checks that the view's pointers are set and every pitch covers its row.
 bool IsUsable(const ImageView& view);
 bool IsUsable(const ImageSpan& span);
