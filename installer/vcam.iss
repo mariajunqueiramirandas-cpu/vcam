@@ -56,7 +56,7 @@ Source: "{#Dist}\vcam.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Loaded by Windows Frame Server or by the apps using the camera: replaced at
 ; the next restart when in use.
 Source: "{#Dist}\vcamsource.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "{#Dist}\vcamdshow.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
+Source: "{#Dist}\vcamdshow.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
 Source: "{#Dist}\vcamdshow32.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
 Source: "{#Dist}\sdk\*"; DestDir: "{app}\sdk"; Flags: ignoreversion
 Source: "{#Dist}\python\*"; DestDir: "{app}\python"; Flags: ignoreversion
