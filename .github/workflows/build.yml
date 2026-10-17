@@ -11,25 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show installed toolchain
+      - name: Install WDK (NuGet, only if the runner doesn't already have one)
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          & $vswhere -all -products * -format json | ConvertFrom-Json |
-            ForEach-Object { "{0} {1} -> {2}" -f $_.displayName, $_.installationVersion, $_.installationPath }
-          "--- Windows Kits Include:"
-          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          "--- WDK kernel headers:"
-          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include\*\km\wdm.h" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-          "--- Kernel-mode driver toolset:"
-          Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\*\*\MSBuild\Microsoft\VC\*\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-
-      - name: Restore WDK from NuGet (only if not installed)
-        shell: pwsh
-        run: |
-          if (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include\*\km\wdm.h" -ErrorAction SilentlyContinue) {
-            "WDK is installed; skipping NuGet restore."
+          $wdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include\*\km\wdm.h" -ErrorAction SilentlyContinue
+          if ($wdk) {
+            "WDK already installed: $($wdk.FullName)"
           } else {
+            "No WDK on this runner; restoring from NuGet (see Directory.Build.props)."
             nuget restore packages.config -PackagesDirectory packages
           }
 
@@ -40,16 +29,21 @@ jobs:
       - name: Build
         run: msbuild vcam.sln -m -p:Configuration=Release -p:Platform=x64 -v:m -bl:build.binlog
 
-      - name: List outputs
-        if: always()
+      - name: Collect the installable package
         shell: pwsh
-        run: Get-ChildItem driver\x64, bin -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item driver\x64\Release\vcam\vcam.sys, driver\x64\Release\vcam\vcam.inf, driver\x64\Release\vcam\vcam.cat `
+                    bin\x64\Release\vcamctl.exe, scripts\install.ps1, scripts\uninstall.ps1 -Destination dist\
+          Get-ChildItem dist | Select-Object -ExpandProperty FullName
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcam-x64
+          path: dist/**
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-output
-          path: |
-            driver/x64/**
-            bin/**
-            build.binlog
+          name: build-log
+          path: build.binlog
