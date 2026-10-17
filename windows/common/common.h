@@ -26,11 +26,16 @@ constexpr int kMaxCameras = 4;
 // {B3EC4CDA-11F2-4D3D-8471-4763B6A6C820} with the index added to the last byte.
 GUID SourceClsid(int index);
 bool CameraFromClsid(REFCLSID clsid, int* index);
+// CLSID of the DirectShow filter for camera `index`: ...C830 plus the index.
+GUID DirectShowClsid(int index);
+bool CameraFromDirectShowClsid(REFCLSID clsid, int* index);
 std::wstring GuidString(REFGUID guid);
 
 // Kernel object names. Global\ so the media source (Frame Server, session 0)
-// and producers in any user session see the same objects.
-std::wstring ShmName(int index);
+// and producers in any user session see the same objects. With the DirectShow
+// backend the mapping may also live in the session's Local\ namespace, see
+// SharedFrames::Open.
+std::wstring ShmName(int index, bool local = false);
 std::wstring FrameEventName(int index);
 std::wstring RequestEventName(int index);
 std::wstring ProducerMutexName(int index);
@@ -38,6 +43,17 @@ std::wstring ProducerMutexName(int index);
 // --- configuration (HKLM\SOFTWARE\vcam) -----------------------------------------
 
 constexpr wchar_t kRegistryKey[] = L"SOFTWARE\\vcam";
+
+// How the cameras reach applications.
+enum class Backend : uint32_t {
+    // Windows 11: a Media Foundation virtual camera served by Frame Server, seen
+    // by every app (Media Foundation, WinRT and DirectShow).
+    MediaFoundation = 0,
+    // Windows 10: a DirectShow capture filter loaded into each app, seen by
+    // DirectShow apps (Zoom, Teams, browsers, OBS...).
+    DirectShow = 1,
+};
+const char* BackendName(Backend backend);
 
 struct Config {
     std::wstring install_dir;
@@ -48,6 +64,7 @@ struct Config {
     bool allow_60fps = true;
     bool logging = false;                 // write logs to %ProgramData%\vcam\logs
     std::wstring placeholder;             // image shown with no producer (.vcamimg), empty = built in
+    Backend backend = Backend::MediaFoundation;
 };
 
 Config LoadConfig();
@@ -76,9 +93,10 @@ int64_t NowTicks();
 
 // --- logging -----------------------------------------------------------------------
 
-// Messages go to OutputDebugString, and to %ProgramData%\vcam\logs\<component>.log
-// when logging is enabled in the configuration.
-void LogInit(const wchar_t* component);
+// Messages go to OutputDebugString, and to <component>.log when logging is
+// enabled in the configuration: in %ProgramData%\vcam\logs, or, for code that
+// runs inside applications (`per_user`), in %LOCALAPPDATA%\vcam\logs.
+void LogInit(const wchar_t* component, bool per_user = false);
 void Log(const char* format, ...);
 std::string Narrow(const std::wstring& text);
 std::wstring Widen(const std::string& text);
@@ -97,12 +115,19 @@ public:
     // is set, creates it with room for `capacity` bytes per slot. Creating a
     // Global\ mapping needs SeCreateGlobalPrivilege (administrators, services)
     // or running in session 0; otherwise only opening works.
+    //
+    // `allow_local` (DirectShow backend, where producer and consumers usually
+    // run in the same user session without that privilege): look for the
+    // mapping in Global\ and then Local\, and create it in Global\ if
+    // allowed, otherwise in Local\. Both sides follow the same order, so they
+    // meet in one namespace.
     // Returns true once attached to an initialised ring.
-    bool Open(int index, bool create, uint64_t capacity);
+    bool Open(int index, bool create, uint64_t capacity, bool allow_local = false);
     void Close();
 
     bool is_open() const { return ring_.attached(); }
     bool created() const { return created_; }
+    bool local() const { return local_; }  // attached to the session's Local\ mapping
     Ring& ring() { return ring_; }
     const Ring& ring() const { return ring_; }
     HANDLE frame_event() const { return frame_event_; }      // set by the producer after each frame
@@ -115,6 +140,7 @@ private:
     HANDLE request_event_ = nullptr;
     Ring ring_;
     bool created_ = false;
+    bool local_ = false;
 };
 
 // Opens or creates a Global\ mutex or event with the same access rules as the

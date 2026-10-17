@@ -19,6 +19,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #include "vcam/format.h"
@@ -54,7 +55,12 @@ struct FrameRequest {
     uint32_t fps_num = 0;
     uint32_t fps_den = 0;
     uint32_t colorspace = 0;  // ColorSpace
-    uint32_t reserved[2] = {};
+    // The consumer that wrote this request (a random nonzero token). Several
+    // consumers can share a camera (DirectShow: one per application); the
+    // first keeps the request while it streams, the others convert what it
+    // gets.
+    uint32_t owner = 0;
+    uint32_t reserved = 0;
 };
 
 struct alignas(64) Header {
@@ -103,6 +109,14 @@ struct alignas(64) SlotHeader {
 
 static_assert(sizeof(Header) <= kHeaderBytes, "header too large");
 static_assert(sizeof(SlotHeader) <= kSlotHeaderBytes, "slot header too large");
+// 32-bit DirectShow consumers share the mapping with 64-bit producers: the
+// layout must not depend on the architecture.
+static_assert(sizeof(FrameRequest) == 32, "FrameRequest layout");
+static_assert(offsetof(Header, latest_frame) == 64 && offsetof(Header, frames_written) == 88, "Header layout");
+static_assert(offsetof(Header, request_seq) == 128 && offsetof(Header, request) == 136, "Header layout");
+static_assert(offsetof(Header, consumer_heartbeat) == 168 && offsetof(Header, frames_repeated) == 192, "Header layout");
+static_assert(sizeof(Header) == 256 && sizeof(SlotHeader) == 128, "Header layout");
+static_assert(offsetof(SlotHeader, timestamp) == 72 && offsetof(SlotHeader, frame) == 80, "SlotHeader layout");
 
 }  // namespace shm
 }  // namespace vcam

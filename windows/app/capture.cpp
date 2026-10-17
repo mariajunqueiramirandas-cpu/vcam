@@ -545,6 +545,16 @@ std::unique_ptr<Source> MakeWindowSource(const std::string& title, bool cursor)
     return std::make_unique<CaptureSource>(nullptr, search.found, cursor, "window \"" + Utf8(text) + "\"");
 }
 
+std::unique_ptr<Source> MakeWindowSourceFor(HWND window, bool cursor)
+{
+    if (!window || !IsWindow(window)) {
+        return std::make_unique<MissingSource>("that window was closed");
+    }
+    wchar_t text[512] = {};
+    GetWindowTextW(window, text, 512);
+    return std::make_unique<CaptureSource>(nullptr, window, cursor, "window \"" + Utf8(text) + "\"");
+}
+
 void ConfigureCapture(Source& source, ScaleMode scale, Rgb background)
 {
     if (auto* capture = dynamic_cast<CaptureSource*>(&source)) {

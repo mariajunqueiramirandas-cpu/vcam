@@ -260,7 +260,7 @@ public:
             started_ = true;
         }
         const int64_t due = base_ + media_time;
-        while (!g_stop && win::NowTicks() < due) {
+        while (!stopping() && win::NowTicks() < due) {
             const int64_t left = due - win::NowTicks();
             Sleep(left > 20000 ? static_cast<DWORD>(left / 10000 - 1) : 0);
         }

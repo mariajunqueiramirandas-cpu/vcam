@@ -9,6 +9,7 @@
 #include <mfvirtualcamera.h>
 #include <sddl.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -432,9 +433,143 @@ std::string FormatResolution(uint32_t w, uint32_t h)
     return std::to_string(w) + "x" + std::to_string(h);
 }
 
+// --- DirectShow backend (Windows 10) ---------------------------------------------------
+
+// CLSID_VideoInputDeviceCategory: where DirectShow lists capture devices.
+constexpr wchar_t kVideoInputCategory[] = L"{860BB310-5D01-11D0-BD3B-00A0C911CE86}";
+
+std::wstring SystemDirectory(const wchar_t* sub)
+{
+    wchar_t windows[MAX_PATH] = {};
+    const UINT n = GetSystemWindowsDirectoryW(windows, MAX_PATH);
+    return std::wstring(n && n < MAX_PATH ? windows : L"C:\\Windows") + L"\\" + sub;
+}
+
+// Runs a program without a window and returns its exit code (or -1).
+int RunHidden(const std::wstring& command_line, DWORD timeout_ms)
+{
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring command = command_line;
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                        &pi)) {
+        return -1;
+    }
+    DWORD code = static_cast<DWORD>(-1);
+    if (WaitForSingleObject(pi.hProcess, timeout_ms) == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &code);
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return static_cast<int>(code);
+}
+
+// The filters register themselves (DllRegisterServer reads the configuration:
+// one capture device per camera, with its name). regsvr32 from System32 runs
+// the 64-bit filter, the one from SysWOW64 the 32-bit filter for 32-bit apps.
+bool RunRegsvr32(const std::wstring& dir, bool unregister, std::string* error)
+{
+    struct Item {
+        const wchar_t* dll;
+        const wchar_t* system;
+        bool required;
+    };
+    static const Item items[] = {{L"vcamdshow.dll", L"System32", true}, {L"vcamdshow32.dll", L"SysWOW64", false}};
+    bool ok = true;
+    for (const Item& item : items) {
+        const std::wstring dll = dir + L"\\" + item.dll;
+        const std::wstring regsvr32 = SystemDirectory(item.system) + L"\\regsvr32.exe";
+        if (!FileExists(dll) || !FileExists(regsvr32)) {
+            if (item.required && !unregister) {
+                *error = Utf8(dll) + " is missing";
+                ok = false;
+            }
+            continue;
+        }
+        const int code = RunHidden(L"\"" + regsvr32 + L"\" /s " + (unregister ? L"/u " : L"") + L"\"" + dll + L"\"", 30000);
+        if (code != 0 && !unregister) {
+            *error = "registering " + Utf8(item.dll) + " failed (regsvr32 exit code " + std::to_string(code) + ")";
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+bool DirectShowRegistered(int index, bool wow32)
+{
+    const std::wstring key = L"SOFTWARE\\Classes\\CLSID\\" + std::wstring(kVideoInputCategory) + L"\\Instance\\" +
+                             win::GuidString(win::DirectShowClsid(index));
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_READ | (wow32 ? KEY_WOW64_32KEY : KEY_WOW64_64KEY), &h) !=
+        ERROR_SUCCESS) {
+        return false;
+    }
+    RegCloseKey(h);
+    return true;
+}
+
+// Removes every DirectShow registration of vcam from both registry views, in
+// case the filters themselves could not (files already gone).
+void RemoveDirectShowKeys()
+{
+    for (const REGSAM view : {KEY_WOW64_64KEY, KEY_WOW64_32KEY}) {
+        HKEY classes = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Classes\\CLSID", 0, KEY_ALL_ACCESS | view, &classes) !=
+            ERROR_SUCCESS) {
+            continue;
+        }
+        for (int i = 0; i < win::kMaxCameras; i++) {
+            const std::wstring clsid = win::GuidString(win::DirectShowClsid(i));
+            RegDeleteTreeW(classes, clsid.c_str());
+            RegDeleteKeyExW(classes, clsid.c_str(), view, 0);
+            const std::wstring instance = std::wstring(kVideoInputCategory) + L"\\Instance\\" + clsid;
+            RegDeleteTreeW(classes, instance.c_str());
+            RegDeleteKeyExW(classes, instance.c_str(), view, 0);
+        }
+        RegCloseKey(classes);
+    }
+}
+
+// --- Start menu --------------------------------------------------------------------------------
+
+std::wstring StartMenuShortcut()
+{
+    PWSTR folder = nullptr;
+    std::wstring path;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_CommonPrograms, 0, nullptr, &folder))) {
+        path = std::wstring(folder) + L"\\VCam.lnk";
+    }
+    CoTaskMemFree(folder);
+    return path;
+}
+
+void CreateStartMenuShortcut(const std::wstring& target)
+{
+    const std::wstring link = StartMenuShortcut();
+    ComPtr<IShellLinkW> shell_link;
+    ComPtr<IPersistFile> file;
+    if (link.empty() || FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&shell_link)))) {
+        return;
+    }
+    shell_link->SetPath(target.c_str());
+    shell_link->SetWorkingDirectory(Directory(target).c_str());
+    shell_link->SetDescription(L"VCam virtual camera");
+    if (SUCCEEDED(shell_link.As(&file))) {
+        file->Save(link.c_str(), TRUE);
+    }
+}
+
 }  // namespace
 
 // --- commands ---------------------------------------------------------------------------------
+
+bool VirtualCamerasSupported()
+{
+    MediaFoundation mf;
+    VirtualCameraApi api;
+    return api.available();
+}
 
 int CmdInstall(const InstallOptions& options)
 {
@@ -443,75 +578,72 @@ int CmdInstall(const InstallOptions& options)
     }
     MediaFoundation mf;
     VirtualCameraApi api;
-    if (!api.available()) {
-        PrintError("this Windows version has no virtual camera support (Windows 11, build 22000 or later, is "
-                   "needed; this is build %lu)\n",
+    const bool mf_supported = api.available();
+    const win::Backend backend = options.backend < 0 ? (mf_supported ? win::Backend::MediaFoundation
+                                                                     : win::Backend::DirectShow)
+                                                     : static_cast<win::Backend>(options.backend);
+    if (backend == win::Backend::MediaFoundation && !mf_supported) {
+        PrintError("Media Foundation virtual cameras need Windows 11 (build 22000 or later; this is build %lu). "
+                   "Install with --backend directshow instead.\n",
                    WindowsBuild());
         return 1;
     }
 
     win::Config previous = win::LoadConfig();
     win::Config config = previous;
+    const bool upgrade = !previous.install_dir.empty();
     const std::wstring from_dir = Directory(ExecutablePath());
     const std::wstring dir = ProgramFilesDir() + L"\\vcam";
+    const wchar_t* backend_dll = backend == win::Backend::MediaFoundation ? L"vcamsource.dll" : L"vcamdshow.dll";
 
-    // 1. Files.
-    Print("Installing to %s\n", Utf8(dir).c_str());
+    // 1. Files (the setup program copies them itself).
+    Print("Installing to %s (%s backend)\n", Utf8(dir).c_str(), win::BackendName(backend));
     CreateDirectoryW(dir.c_str(), nullptr);
     bool deferred = false;
-    if (!SamePath(from_dir, dir)) {
+    if (!options.managed && !SamePath(from_dir, dir)) {
         struct Item {
-            const wchar_t* from;  // relative to the package
-            const wchar_t* to;    // relative to the install directory
+            const wchar_t* path;  // relative to the package and to the install directory
             bool required;
         };
         static const Item items[] = {
-            {L"vcam.exe", L"vcam.exe", true},
-            {L"vcamsource.dll", L"vcamsource.dll", true},
-            {L"vcam.dll", L"vcam.dll", false},
-            {L"sdk\\vcam.h", L"sdk\\vcam.h", false},
-            {L"sdk\\vcam.lib", L"sdk\\vcam.lib", false},
-            {L"python\\vcam.py", L"python\\vcam.py", false},
-            {L"python\\example.py", L"python\\example.py", false},
-            {L"README.md", L"README.md", false},
+            {L"vcam.exe", true},          {L"vcam-gui.exe", false},     {L"vcamsource.dll", false},
+            {L"vcamdshow.dll", false},    {L"vcamdshow32.dll", false},  {L"vcam.dll", false},
+            {L"sdk\\vcam.h", false},      {L"sdk\\vcam.lib", false},    {L"python\\vcam.py", false},
+            {L"python\\example.py", false}, {L"README.md", false},
         };
         for (const Item& item : items) {
-            const std::wstring src = from_dir + L"\\" + item.from;
-            const std::wstring dst = dir + L"\\" + item.to;
+            const std::wstring src = from_dir + L"\\" + item.path;
+            const std::wstring dst = dir + L"\\" + item.path;
             if (!FileExists(src)) {
                 if (item.required) {
                     PrintError("%s is missing next to vcam.exe; run install from the extracted package\n",
-                               Utf8(item.from).c_str());
+                               Utf8(item.path).c_str());
                     return 1;
                 }
                 continue;
             }
             CreateDirectoryW(Directory(dst).c_str(), nullptr);
             if (!ReplaceFileInUse(src, dst, &deferred)) {
-                PrintError("copying %s failed: %s\n", Utf8(item.from).c_str(), ErrorText(GetLastError()).c_str());
+                PrintError("copying %s failed: %s\n", Utf8(item.path).c_str(), ErrorText(GetLastError()).c_str());
                 return 1;
             }
             RemoveMarkOfTheWeb(dst);
         }
     } else {
-        RemoveMarkOfTheWeb(dir + L"\\vcamsource.dll");
+        for (const wchar_t* f : {L"vcamsource.dll", L"vcamdshow.dll", L"vcamdshow32.dll"}) {
+            RemoveMarkOfTheWeb(dir + L"\\" + f);
+        }
     }
-    if (!FileExists(dir + L"\\vcamsource.dll")) {
-        PrintError("%s\\vcamsource.dll is missing\n", Utf8(dir).c_str());
+    if (!FileExists(dir + L"\\" + backend_dll)) {
+        PrintError("%s\\%s is missing\n", Utf8(dir).c_str(), Utf8(backend_dll).c_str());
         return 1;
     }
     CreateDataDirectories();
 
-    // 2. COM registration of the media source (HKLM: Frame Server reads it).
-    const LSTATUS reg = win::RegisterSourceClasses(dir + L"\\vcamsource.dll");
-    if (reg != ERROR_SUCCESS) {
-        PrintError("registering the media source failed: %s\n", ErrorText(static_cast<DWORD>(reg)).c_str());
-        return 1;
-    }
-
-    // 3. Configuration.
+    // 2. Configuration (the DirectShow filters read it while registering).
     config.install_dir = dir;
     config.cameras = options.cameras;
+    config.backend = backend;
     for (int i = 0; i < win::kMaxCameras; i++) {
         if (i < static_cast<int>(options.names.size()) && !options.names[i].empty()) {
             config.names[i] = options.names[i];
@@ -529,47 +661,92 @@ int CmdInstall(const InstallOptions& options)
         return 1;
     }
 
-    // 4. Cameras. Renamed or surplus ones from an earlier install go first.
-    for (int i = 0; i < previous.cameras; i++) {
-        if (i >= config.cameras || previous.names[i] != config.names[i]) {
-            RemoveCamera(api, i, previous.names[i]);
+    // 3. Cameras.
+    int failures = 0;
+    if (upgrade && previous.backend != backend) {
+        // Switching backends: take the other one down so apps do not list each camera twice.
+        if (previous.backend == win::Backend::MediaFoundation) {
+            for (int i = 0; i < previous.cameras && mf_supported; i++) {
+                RemoveCamera(api, i, previous.names[i]);
+            }
+        } else {
+            std::string ignored;
+            RunRegsvr32(dir, true, &ignored);
+            RemoveDirectShowKeys();
         }
     }
-    int failures = 0;
-    for (int i = 0; i < config.cameras; i++) {
-        const HRESULT hr = RegisterCamera(api, i, config.names[i]);
-        if (FAILED(hr)) {
-            PrintError("registering camera %d (\"%s\") failed: %s\n", i + 1, Utf8(config.names[i]).c_str(),
-                       HresultText(hr).c_str());
-            if (hr == E_ACCESSDENIED) {
-                PrintError("  check Settings > Privacy & security > Camera: camera access must be on\n");
+    if (backend == win::Backend::MediaFoundation) {
+        // COM registration of the media source (HKLM: Frame Server reads it).
+        const LSTATUS reg = win::RegisterSourceClasses(dir + L"\\vcamsource.dll");
+        if (reg != ERROR_SUCCESS) {
+            PrintError("registering the media source failed: %s\n", ErrorText(static_cast<DWORD>(reg)).c_str());
+            return 1;
+        }
+        // Renamed or surplus cameras from an earlier install go first.
+        if (previous.backend == win::Backend::MediaFoundation) {
+            for (int i = 0; i < previous.cameras; i++) {
+                if (i >= config.cameras || previous.names[i] != config.names[i]) {
+                    RemoveCamera(api, i, previous.names[i]);
+                }
             }
+        }
+        for (int i = 0; i < config.cameras; i++) {
+            const HRESULT hr = RegisterCamera(api, i, config.names[i]);
+            if (FAILED(hr)) {
+                PrintError("registering camera %d (\"%s\") failed: %s\n", i + 1, Utf8(config.names[i]).c_str(),
+                           HresultText(hr).c_str());
+                if (hr == E_ACCESSDENIED) {
+                    PrintError("  check Settings > Privacy & security > Camera: camera access must be on\n");
+                }
+                failures++;
+            } else {
+                Print("  camera %d: \"%s\"\n", i + 1, Utf8(config.names[i]).c_str());
+            }
+        }
+    } else {
+        std::string error;
+        if (!RunRegsvr32(dir, false, &error)) {
+            PrintError("%s\n", error.c_str());
             failures++;
-        } else {
-            Print("  camera %d: \"%s\"\n", i + 1, Utf8(config.names[i]).c_str());
+        }
+        for (int i = 0; i < config.cameras; i++) {
+            const bool ok = DirectShowRegistered(i, false);
+            Print("  camera %d: \"%s\"%s\n", i + 1, Utf8(config.names[i]).c_str(),
+                  ok ? (DirectShowRegistered(i, true) ? "" : " (64-bit apps only)") : " NOT registered");
+            failures += ok ? 0 : 1;
         }
     }
 
-    // 5. Integration.
-    WriteUninstallEntry(dir);
+    // 4. Integration.
+    if (!options.managed) {
+        WriteUninstallEntry(dir);
+        if (FileExists(dir + L"\\vcam-gui.exe")) {
+            CreateStartMenuShortcut(dir + L"\\vcam-gui.exe");
+        }
+    }
     if (options.add_to_path) {
         UpdateMachinePath(dir, true);
     }
 
-    Print("Modes: up to %s at 30%s fps, NV12 / YUY2 / RGB32\n", FormatResolution(config.max_width, config.max_height).c_str(),
-          config.allow_60fps ? " and 60" : "");
+    Print("Modes: up to %s at 30%s fps, %s\n", FormatResolution(config.max_width, config.max_height).c_str(),
+          config.allow_60fps ? " and 60" : "",
+          backend == win::Backend::MediaFoundation ? "NV12 / YUY2 / RGB32" : "NV12 / YUY2 / I420 / RGB32");
     if (deferred) {
         Print("An older version was still in use; its files are removed at the next restart.\n");
     }
     if (failures) {
         return 1;
     }
-    Print("Done. Apps now list the camera%s; feed %s with e.g. `vcam bars`.\n", config.cameras > 1 ? "s" : "",
+    Print("Done. Apps now list the camera%s; feed %s with VCam or e.g. `vcam bars`.\n", config.cameras > 1 ? "s" : "",
           config.cameras > 1 ? "them" : "it");
+    if (backend == win::Backend::DirectShow) {
+        Print("(DirectShow: desktop apps such as Zoom, Teams, browsers and OBS see it; the Windows Camera app does "
+              "not.)\n");
+    }
     return 0;
 }
 
-int CmdUninstall()
+int CmdUninstall(bool managed)
 {
     if (!RequireElevation("vcam uninstall")) {
         return 1;
@@ -577,7 +754,8 @@ int CmdUninstall()
     MediaFoundation mf;
     VirtualCameraApi api;
     const win::Config config = win::LoadConfig();
-    if (api.available()) {
+    const std::wstring dir = config.install_dir.empty() ? ProgramFilesDir() + L"\\vcam" : config.install_dir;
+    if (config.backend == win::Backend::MediaFoundation && api.available()) {
         for (int i = 0; i < std::max(config.cameras, 1); i++) {
             const HRESULT hr = RemoveCamera(api, i, config.names[i]);
             Print("  camera %d (\"%s\"): %s\n", i + 1, Utf8(config.names[i]).c_str(),
@@ -585,34 +763,40 @@ int CmdUninstall()
         }
     }
     win::UnregisterSourceClasses();
+    std::string ignored;
+    RunRegsvr32(dir, true, &ignored);
+    RemoveDirectShowKeys();
 
-    // Remove the scheduled task created by `vcam autostart`, if any.
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring command = L"schtasks.exe /Delete /F /TN vcam";
-    if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, 10000);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+    // Remove the scheduled tasks created by `vcam autostart` and the GUI, if any.
+    for (const wchar_t* task : {L"vcam", L"vcam-gui"}) {
+        RunHidden(std::wstring(L"schtasks.exe /Delete /F /TN ") + task, 10000);
     }
 
-    const std::wstring dir = config.install_dir.empty() ? ProgramFilesDir() + L"\\vcam" : config.install_dir;
     UpdateMachinePath(dir, false);
-    RegDeleteTreeW(HKEY_LOCAL_MACHINE, kUninstallKey);
-    RegDeleteKeyExW(HKEY_LOCAL_MACHINE, kUninstallKey, KEY_WOW64_64KEY, 0);
     HKEY software = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE", 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY, &software) == ERROR_SUCCESS) {
         RegDeleteTreeW(software, L"vcam");
         RegDeleteKeyExW(software, L"vcam", KEY_WOW64_64KEY, 0);
         RegCloseKey(software);
     }
+    if (managed) {
+        // The setup program removes the files and its Installed apps entry.
+        Print("vcam's cameras and registrations are removed.\n");
+        return 0;
+    }
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE, kUninstallKey);
+    RegDeleteKeyExW(HKEY_LOCAL_MACHINE, kUninstallKey, KEY_WOW64_64KEY, 0);
+    const std::wstring shortcut = StartMenuShortcut();
+    if (!shortcut.empty()) {
+        DeleteFileW(shortcut.c_str());
+    }
 
-    // Files: anything in use (the media source inside Frame Server, this
+    // Files: anything in use (the camera inside Frame Server or an app, this
     // program) goes at the next restart.
     bool deferred = false;
-    static const wchar_t* const files[] = {L"vcamsource.dll", L"vcam.dll", L"sdk\\vcam.h", L"sdk\\vcam.lib",
-                                           L"python\\vcam.py", L"python\\example.py", L"README.md", L"vcam.exe"};
+    static const wchar_t* const files[] = {L"vcamsource.dll", L"vcamdshow.dll", L"vcamdshow32.dll", L"vcam.dll",
+                                           L"sdk\\vcam.h", L"sdk\\vcam.lib", L"python\\vcam.py", L"python\\example.py",
+                                           L"README.md", L"vcam-gui.exe", L"vcam.exe"};
     const bool running_from_install = SamePath(Directory(ExecutablePath()), dir);
     for (const wchar_t* f : files) {
         const std::wstring path = dir + L"\\" + f;
@@ -647,33 +831,48 @@ int CmdStatus()
         Print("  Not installed. Run `vcam install` as administrator.\n");
         return 1;
     }
+    const bool dshow = config.backend == win::Backend::DirectShow;
     std::wstring server;
-    const std::wstring clsid_key =
-        L"SOFTWARE\\Classes\\CLSID\\" + win::GuidString(win::SourceClsid(0)) + L"\\InprocServer32";
+    const std::wstring clsid_key = L"SOFTWARE\\Classes\\CLSID\\" +
+                                   win::GuidString(dshow ? win::DirectShowClsid(0) : win::SourceClsid(0)) +
+                                   L"\\InprocServer32";
     const bool registered = win::RegReadString(HKEY_LOCAL_MACHINE, clsid_key.c_str(), nullptr, &server);
     Print("  Installed in %s\n", Utf8(config.install_dir).c_str());
-    Print("  Media source: %s\n", !registered            ? "NOT registered (run `vcam install`)"
-                                  : FileExists(server) ? Utf8(server).c_str()
-                                                       : "registered, but the file is missing (run `vcam install`)");
+    Print("  Backend: %s\n", dshow ? "DirectShow (desktop apps; not the Windows Camera app)"
+                                    : "Media Foundation (all apps, through Windows Frame Server)");
+    Print("  %s: %s\n", dshow ? "Filter" : "Media source",
+          !registered          ? "NOT registered (run `vcam install`)"
+          : FileExists(server) ? Utf8(server).c_str()
+                               : "registered, but the file is missing (run `vcam install`)");
     Print("  Modes: up to %s, %s\n", FormatResolution(config.max_width, config.max_height).c_str(),
           config.allow_60fps ? "30 and 60 fps" : "30 fps");
     Print("  Placeholder: %s\n", config.placeholder.empty() ? "built in" : Utf8(config.placeholder).c_str());
     Print("  Logging: %s\n", config.logging ? Utf8(win::DataDirectory() + L"\\logs").c_str() : "off");
 
-    const std::vector<RegisteredCamera> devices = VideoDevices(config);
+    const std::vector<RegisteredCamera> devices = dshow ? std::vector<RegisteredCamera>() : VideoDevices(config);
     const int64_t now = win::NowTicks();
     int problems = registered ? 0 : 1;
     for (int i = 0; i < config.cameras; i++) {
-        const auto it = std::find_if(devices.begin(), devices.end(), [&](const RegisteredCamera& d) { return d.slot == i; });
-        Print("\nCamera %d \"%s\": %s\n", i + 1, Utf8(config.names[i]).c_str(),
-              it != devices.end() ? "visible to applications" : "NOT registered with Windows (run `vcam install`)");
-        if (it == devices.end()) {
-            problems++;
-        } else if (it->name != config.names[i]) {
-            Print("  Listed by apps as \"%s\"\n", Utf8(it->name).c_str());
+        if (dshow) {
+            const bool x64 = DirectShowRegistered(i, false), x86 = DirectShowRegistered(i, true);
+            Print("\nCamera %d \"%s\": %s\n", i + 1, Utf8(config.names[i]).c_str(),
+                  !x64 ? "NOT registered with DirectShow (run `vcam install`)"
+                  : x86 ? "visible to applications (64-bit and 32-bit)"
+                        : "visible to 64-bit applications");
+            problems += x64 ? 0 : 1;
+        } else {
+            const auto it =
+                std::find_if(devices.begin(), devices.end(), [&](const RegisteredCamera& d) { return d.slot == i; });
+            Print("\nCamera %d \"%s\": %s\n", i + 1, Utf8(config.names[i]).c_str(),
+                  it != devices.end() ? "visible to applications" : "NOT registered with Windows (run `vcam install`)");
+            if (it == devices.end()) {
+                problems++;
+            } else if (it->name != config.names[i]) {
+                Print("  Listed by apps as \"%s\"\n", Utf8(it->name).c_str());
+            }
         }
         win::SharedFrames shm;
-        if (!shm.Open(i, false, 0)) {
+        if (!shm.Open(i, false, 0, dshow)) {
             Print("  Idle: no app is using it and no producer is running.\n");
             continue;
         }
@@ -751,7 +950,12 @@ int CmdConfig(Args& args)
         PrintError("saving the configuration failed\n");
         return 1;
     }
-    if (renamed) {
+    if (renamed && config.backend == win::Backend::DirectShow) {
+        std::string error;
+        if (!RunRegsvr32(config.install_dir, false, &error)) {
+            PrintError("%s\n", error.c_str());
+        }
+    } else if (renamed) {
         MediaFoundation mf;
         VirtualCameraApi api;
         for (int i = 0; i < config.cameras; i++) {
@@ -896,6 +1100,16 @@ void EnsureCamerasRegistered()
     }
     const win::Config config = win::LoadConfig();
     if (config.cameras == 0) {
+        return;
+    }
+    if (config.backend == win::Backend::DirectShow) {
+        for (int i = 0; i < config.cameras; i++) {
+            std::string error;
+            if (!DirectShowRegistered(i, false) && RunRegsvr32(config.install_dir, false, &error)) {
+                Print("The cameras were missing from DirectShow and have been registered again.\n");
+                break;
+            }
+        }
         return;
     }
     MediaFoundation mf;

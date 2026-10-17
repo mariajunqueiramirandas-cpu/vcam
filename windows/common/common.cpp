@@ -28,6 +28,22 @@ bool CameraFromClsid(REFCLSID clsid, int* index)
     return false;
 }
 
+GUID DirectShowClsid(int index)
+{
+    return GUID{0xb3ec4cda, 0x11f2, 0x4d3d, {0x84, 0x71, 0x47, 0x63, 0xb6, 0xa6, 0xc8, static_cast<unsigned char>(0x30 + index)}};
+}
+
+bool CameraFromDirectShowClsid(REFCLSID clsid, int* index)
+{
+    for (int i = 0; i < kMaxCameras; i++) {
+        if (IsEqualGUID(clsid, DirectShowClsid(i))) {
+            *index = i;
+            return true;
+        }
+    }
+    return false;
+}
+
 std::wstring GuidString(REFGUID guid)
 {
     wchar_t text[64] = {};
@@ -37,16 +53,16 @@ std::wstring GuidString(REFGUID guid)
 
 namespace {
 
-std::wstring ObjectName(int index, const wchar_t* suffix)
+std::wstring ObjectName(int index, const wchar_t* suffix, bool local = false)
 {
-    return L"Global\\VCam.v1.Camera" + std::to_wstring(index) + suffix;
+    return (local ? L"Local\\VCam.v1.Camera" : L"Global\\VCam.v1.Camera") + std::to_wstring(index) + suffix;
 }
 
 }  // namespace
 
-std::wstring ShmName(int index)
+std::wstring ShmName(int index, bool local)
 {
-    return ObjectName(index, L".Frames");
+    return ObjectName(index, L".Frames", local);
 }
 
 std::wstring FrameEventName(int index)
@@ -150,6 +166,11 @@ void UnregisterSourceClasses()
 
 // --- configuration -------------------------------------------------------------------
 
+const char* BackendName(Backend backend)
+{
+    return backend == Backend::DirectShow ? "DirectShow" : "Media Foundation";
+}
+
 std::wstring DefaultCameraName(int index)
 {
     return index == 0 ? L"VCam" : L"VCam " + std::to_wstring(index + 1);
@@ -182,6 +203,10 @@ Config LoadConfig()
         c.logging = value != 0;
     }
     RegReadString(HKEY_LOCAL_MACHINE, kRegistryKey, L"Placeholder", &c.placeholder);
+    if (RegReadDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Backend", &value) &&
+        value == static_cast<DWORD>(Backend::DirectShow)) {
+        c.backend = Backend::DirectShow;
+    }
     return c;
 }
 
@@ -198,6 +223,7 @@ bool SaveConfig(const Config& c)
     ok &= RegWriteDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Allow60fps", c.allow_60fps ? 1 : 0) == ERROR_SUCCESS;
     ok &= RegWriteDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Logging", c.logging ? 1 : 0) == ERROR_SUCCESS;
     ok &= RegWriteString(HKEY_LOCAL_MACHINE, kRegistryKey, L"Placeholder", c.placeholder) == ERROR_SUCCESS;
+    ok &= RegWriteDword(HKEY_LOCAL_MACHINE, kRegistryKey, L"Backend", static_cast<DWORD>(c.backend)) == ERROR_SUCCESS;
     return ok;
 }
 
@@ -258,14 +284,27 @@ std::wstring Widen(const std::string& text)
     return out;
 }
 
-void LogInit(const wchar_t* component)
+void LogInit(const wchar_t* component, bool per_user)
 {
     std::lock_guard<std::mutex> lock(g_log_lock);
     g_component = Narrow(component);
     if (g_log_file != INVALID_HANDLE_VALUE || !LoadConfig().logging) {
         return;
     }
-    const std::wstring path = DataDirectory() + L"\\logs\\" + component + L".log";
+    std::wstring dir = DataDirectory() + L"\\logs";
+    if (per_user) {
+        // Inside an application: the user's own folder, never a shared one.
+        wchar_t local[MAX_PATH] = {};
+        const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH) {
+            return;
+        }
+        dir = std::wstring(local) + L"\\vcam";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        dir += L"\\logs";
+        CreateDirectoryW(dir.c_str(), nullptr);
+    }
+    const std::wstring path = dir + L"\\" + component + L".log";
     g_log_file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (g_log_file != INVALID_HANDLE_VALUE) {
@@ -361,21 +400,35 @@ SharedFrames::~SharedFrames()
     Close();
 }
 
-bool SharedFrames::Open(int index, bool create, uint64_t capacity)
+bool SharedFrames::Open(int index, bool create, uint64_t capacity, bool allow_local)
 {
     if (is_open()) {
         return true;
     }
     Close();
-    const std::wstring name = ShmName(index);
-    HANDLE mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name.c_str());
+    bool local = false;
+    HANDLE mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, ShmName(index).c_str());
+    if (!mapping && allow_local) {
+        mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, ShmName(index, true).c_str());
+        local = mapping != nullptr;
+    }
     bool created = false;
     if (!mapping && create) {
         const uint64_t size = ShmBytesFor(capacity);
         SecurityAttributes sa(kSectionSddl);
-        mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, sa.get(), PAGE_READWRITE | SEC_COMMIT,
-                                     static_cast<DWORD>(size >> 32), static_cast<DWORD>(size), name.c_str());
-        created = mapping && GetLastError() != ERROR_ALREADY_EXISTS;
+        for (const bool in_local : {false, true}) {
+            if (in_local && !allow_local) {
+                break;
+            }
+            mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, sa.get(), PAGE_READWRITE | SEC_COMMIT,
+                                         static_cast<DWORD>(size >> 32), static_cast<DWORD>(size),
+                                         ShmName(index, in_local).c_str());
+            if (mapping) {
+                created = GetLastError() != ERROR_ALREADY_EXISTS;
+                local = in_local;
+                break;
+            }
+        }
     }
     if (!mapping) {
         return false;
@@ -404,6 +457,7 @@ bool SharedFrames::Open(int index, bool create, uint64_t capacity)
     mapping_ = mapping;
     view_ = view;
     created_ = created;
+    local_ = local;
     return true;
 }
 
@@ -421,6 +475,7 @@ void SharedFrames::Close()
         }
     }
     created_ = false;
+    local_ = false;
 }
 
 // --- placeholder images ----------------------------------------------------------------------

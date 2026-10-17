@@ -18,6 +18,7 @@ struct vcam_producer {
     int index = 0;  // 0-based camera
     ConvertOptions options;
     uint64_t capacity = 0;
+    bool allow_local = false;  // DirectShow backend: the ring may live in this session
 
     std::mutex lock;  // everything below
     SharedFrames shm;
@@ -201,7 +202,7 @@ void Worker(vcam_producer* p, std::promise<int> started)
         const int64_t now = NowTicks();
         if (!p->shm.is_open() && now >= next_attach) {
             next_attach = now + kAttachRetry;
-            if (p->shm.Open(p->index, true, p->capacity)) {
+            if (p->shm.Open(p->index, true, p->capacity, p->allow_local)) {
                 Log("producer: attached to camera %d", p->index + 1);
             }
         }
@@ -303,6 +304,7 @@ VCAM_API int VCAM_CALL vcam_open(const vcam_options* options, vcam_producer** pr
                                 static_cast<uint8_t>(o.background)};
     const Config config = LoadConfig();
     p->capacity = SlotCapacityFor(std::max<uint32_t>(config.max_width, 1920), std::max<uint32_t>(config.max_height, 1080));
+    p->allow_local = config.backend == Backend::DirectShow;
     p->stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!p->stop_event) {
         delete p;
@@ -322,7 +324,7 @@ VCAM_API int VCAM_CALL vcam_open(const vcam_options* options, vcam_producer** pr
     // Attach right away when possible, so the first frame goes straight out.
     {
         std::lock_guard<std::mutex> lock(p->lock);
-        p->shm.Open(p->index, true, p->capacity);
+        p->shm.Open(p->index, true, p->capacity, p->allow_local);
         if (p->shm.is_open()) {
             shm::Header* h = p->shm.ring().header();
             AtomicStore(h->producer_pid, static_cast<uint32_t>(GetCurrentProcessId()));

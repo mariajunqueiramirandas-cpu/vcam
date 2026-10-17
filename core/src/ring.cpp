@@ -245,6 +245,7 @@ void Ring::WriteRequest(const FrameRequest& request)
     AtomicStore(out.fps_num, request.fps_num, r);
     AtomicStore(out.fps_den, request.fps_den, r);
     AtomicStore(out.colorspace, request.colorspace, r);
+    AtomicStore(out.owner, request.owner, r);
     AtomicStore(header_->request_seq, odd + 1);
 }
 
@@ -267,6 +268,7 @@ bool Ring::ReadRequest(FrameRequest* request) const
         copy.fps_num = AtomicLoad(in.fps_num, r);
         copy.fps_den = AtomicLoad(in.fps_den, r);
         copy.colorspace = AtomicLoad(in.colorspace, r);
+        copy.owner = AtomicLoad(in.owner, r);
         std::atomic_thread_fence(std::memory_order_acquire);
         if (AtomicLoad(header_->request_seq, r) == seq) {
             *request = copy;

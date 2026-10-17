@@ -12,7 +12,7 @@ function(vcam_version_rc target file_name description file_type)
 endfunction()
 
 # Pieces shared by the media source, the SDK and the tool.
-add_library(vcam_win STATIC common/common.cpp)
+add_library(vcam_win STATIC common/common.cpp common/feed.cpp)
 target_include_directories(vcam_win PUBLIC common)
 target_link_libraries(vcam_win PUBLIC vcam_core advapi32 ole32)
 
@@ -20,7 +20,6 @@ target_link_libraries(vcam_win PUBLIC vcam_core advapi32 ole32)
 add_library(vcamsource SHARED
     source/activate.cpp
     source/dllmain.cpp
-    source/frame_feed.cpp
     source/media_source.cpp
     source/media_stream.cpp
     source/vcamsource.def
@@ -42,20 +41,26 @@ target_compile_definitions(vcam_sdk PRIVATE VCAM_BUILD_DLL)
 target_link_libraries(vcam_sdk PRIVATE vcam_win)
 vcam_version_rc(vcam_sdk vcam.dll "vcam producer SDK" VFT_DLL)
 
-# The vcam tool.
-add_executable(vcam_app
+# The tool library: installation and management, the frame sources and the
+# producer loop. Shared by the command-line tool and the GUI.
+add_library(vcam_tool STATIC
     app/capture.cpp
-    app/main.cpp
     app/media.cpp
+    app/runner.cpp
     app/sources.cpp
     app/system.cpp
-    app/vcam.manifest
+    app/util.cpp
 )
+target_include_directories(vcam_tool PUBLIC app)
+target_compile_definitions(vcam_tool PUBLIC VCAM_VERSION_STRING="${PROJECT_VERSION}")
+target_link_libraries(vcam_tool PUBLIC vcam_producer mf mfplat mfreadwrite mfuuid ole32 oleaut32 windowscodecs
+                      d3d11 dxgi dwmapi cfgmgr32 shell32 windowsapp)
+
+# The command-line tool.
+add_executable(vcam_app app/main.cpp app/vcam.manifest)
 # Same file name as the SDK's vcam.dll, so give the debug database its own name.
 set_target_properties(vcam_app PROPERTIES OUTPUT_NAME vcam PDB_NAME vcam_exe)
-target_compile_definitions(vcam_app PRIVATE VCAM_VERSION_STRING="${PROJECT_VERSION}")
-target_link_libraries(vcam_app PRIVATE vcam_producer mf mfplat mfreadwrite mfuuid ole32 oleaut32 windowscodecs
-                      d3d11 dxgi dwmapi cfgmgr32 shell32 windowsapp)
+target_link_libraries(vcam_app PRIVATE vcam_tool)
 # The manifest above carries the execution level.
 target_link_options(vcam_app PRIVATE /MANIFESTUAC:NO)
 vcam_version_rc(vcam_app vcam.exe "vcam virtual camera tool" VFT_APP)
