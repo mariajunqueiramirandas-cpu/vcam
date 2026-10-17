@@ -54,7 +54,7 @@ add_executable(vcam_app
 # Same file name as the SDK's vcam.dll, so give the debug database its own name.
 set_target_properties(vcam_app PROPERTIES OUTPUT_NAME vcam PDB_NAME vcam_exe)
 target_compile_definitions(vcam_app PRIVATE VCAM_VERSION_STRING="${PROJECT_VERSION}")
-target_link_libraries(vcam_app PRIVATE vcam_producer mfplat mfreadwrite mfuuid ole32 oleaut32 windowscodecs
+target_link_libraries(vcam_app PRIVATE vcam_producer mf mfplat mfreadwrite mfuuid ole32 oleaut32 windowscodecs
                       d3d11 dxgi dwmapi cfgmgr32 shell32 windowsapp)
 # The manifest above carries the execution level.
 target_link_options(vcam_app PRIVATE /MANIFESTUAC:NO)

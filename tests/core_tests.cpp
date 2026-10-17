@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <random>
 #include <string>
@@ -755,16 +756,15 @@ TEST(DrawingNeverWritesOutOfBounds)
 
 void WritePpm(const char* path, const ImageView& v)
 {
-    FILE* f = fopen(path, "wb");
+    std::ofstream f(path, std::ios::binary);
     if (!f) return;
-    fprintf(f, "P6\n%d %d\n255\n", v.width, v.height);
+    f << "P6\n" << v.width << ' ' << v.height << "\n255\n";
     for (int y = 0; y < v.height; y++)
         for (int x = 0; x < v.width; x++) {
             const uint8_t* p = Px(v, x, y);
-            const uint8_t rgb[3] = {p[2], p[1], p[0]};
-            fwrite(rgb, 1, 3, f);
+            const char rgb[3] = {char(p[2]), char(p[1]), char(p[0])};
+            f.write(rgb, 3);
         }
-    fclose(f);
 }
 
 // --- benchmark (only with --bench) -------------------------------------------
