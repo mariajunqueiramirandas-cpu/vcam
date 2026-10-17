@@ -1,4 +1,4 @@
-// The producer loop and the simple sources: test pattern, solid colour, image.
+// The simple sources (test pattern, solid colour, image) and listing what can be captured.
 #include "app.h"
 
 #include <dwmapi.h>
@@ -112,59 +112,6 @@ private:
     int width_ = 0, height_ = 0;
 };
 
-// Waits until an absolute QPC tick with a high-resolution timer.
-class Ticker {
-public:
-    Ticker()
-    {
-        timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-        if (!timer_) {
-            timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
-        }
-    }
-    Ticker(const Ticker&) = delete;
-    Ticker& operator=(const Ticker&) = delete;
-    ~Ticker()
-    {
-        if (timer_) {
-            CloseHandle(timer_);
-        }
-    }
-    void WaitUntil(int64_t tick)
-    {
-        const int64_t delay = tick - win::NowTicks();
-        if (delay <= 0) {
-            return;
-        }
-        if (timer_) {
-            LARGE_INTEGER due;
-            due.QuadPart = -delay;
-            SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE);
-            WaitForSingleObject(timer_, static_cast<DWORD>(delay / 10000 + 100));
-        } else {
-            Sleep(static_cast<DWORD>(delay / 10000));
-        }
-    }
-
-private:
-    HANDLE timer_ = nullptr;
-};
-
-void ShowStatus(const SourceOptions& o, const vcam_status& st, double sent_fps, double ms_per_frame, bool waiting)
-{
-    char line[200];
-    if (waiting) {
-        snprintf(line, sizeof(line), "camera %d: waiting for an app to open the camera...", o.camera);
-    } else {
-        const double fps = st.fps_denominator ? static_cast<double>(st.fps_numerator) / st.fps_denominator : 0;
-        snprintf(line, sizeof(line), "camera %d: apps get %dx%d %s @ %.4g fps | sending %.1f fps, %.1f ms/frame | %llu delivered",
-                 o.camera, st.width, st.height,
-                 st.format ? FormatName(static_cast<PixelFormat>(st.format)) : "?", fps, sent_fps, ms_per_frame,
-                 static_cast<unsigned long long>(st.frames_delivered));
-    }
-    Print("\r%-118s", line);
-}
-
 }  // namespace
 
 std::unique_ptr<Source> MakeBarsSource(const SourceOptions& options)
@@ -261,170 +208,38 @@ bool LoadImageBgra(const std::wstring& path, std::vector<uint8_t>* pixels, int* 
     return true;
 }
 
-int RunSource(Source& source, const SourceOptions& o)
+std::vector<MonitorInfo> EnumerateMonitors()
 {
-    EnsureCamerasRegistered();
-    std::string error;
-    if (!source.Start(&error)) {
-        PrintError("%s\n", error.c_str());
-        return 1;
-    }
-
-    vcam_options vo = VCAM_OPTIONS_INIT;
-    vo.camera = o.camera;
-    vo.scale = static_cast<int32_t>(o.scale);
-    vo.mirror = o.mirror;
-    vo.flip = o.flip;
-    vo.background = (static_cast<uint32_t>(o.background.r) << 16) | (static_cast<uint32_t>(o.background.g) << 8) |
-                    o.background.b;
-    vcam_producer* producer = nullptr;
-    const int rc = vcam_open(&vo, &producer);
-    if (rc != VCAM_OK) {
-        PrintError("camera %d: %s\n", o.camera, vcam_error_string(rc));
-        return 1;
-    }
-    const win::Config config = win::LoadConfig();
-    if (!o.quiet) {
-        Print("Feeding camera %d (\"%s\") with %s. Ctrl+C stops.\n", o.camera,
-              Utf8(config.names[o.camera - 1]).c_str(), source.name());
-        if (config.cameras > 0 && o.camera > config.cameras) {
-            Print("Note: only %d camera%s installed; apps will not list camera %d (`vcam install --cameras %d`).\n",
-                  config.cameras, config.cameras == 1 ? " is" : "s are", o.camera, o.camera);
-        }
-    }
-
-    Ticker ticker;
-    int64_t next_tick = win::NowTicks();
-    int64_t last_status = 0, window_start = win::NowTicks();
-    int window_frames = 0;
-    double window_ms = 0, shown_fps = 0, shown_ms = 0;
-    bool paused = false;
-    Target sent_static{};
-    bool sent_any_static = false;
-    int exit_code = 0;
-
-    while (!g_stop) {
-        vcam_status st{};
-        st.struct_size = sizeof(st);
-        vcam_get_status(producer, &st);
-        Target target;
-        target.width = st.width;
-        target.height = st.height;
-        target.format = static_cast<PixelFormat>(st.format);
-        target.fps = o.fps ? o.fps
-                           : (st.fps_denominator ? static_cast<double>(st.fps_numerator) / st.fps_denominator : 30.0);
-        if (target.fps <= 0) {
-            target.fps = 30;
-        }
-        const bool watching = st.consumer_active || o.always;
-        const int64_t now = win::NowTicks();
-
-        if (!o.quiet && now - last_status > shm::kTicksPerSecond / 2) {
-            const double seconds = static_cast<double>(now - window_start) / shm::kTicksPerSecond;
-            if (seconds > 0.9) {
-                shown_fps = window_frames / seconds;
-                shown_ms = window_frames ? window_ms / window_frames : 0;
-                window_frames = 0;
-                window_ms = 0;
-                window_start = now;
-            }
-            ShowStatus(o, st, shown_fps, shown_ms, !watching && !source.IsStatic());
-            last_status = now;
-        }
-
-        Frame frame;
-        bool ended = false;
-        if (source.IsStatic()) {
-            // Send once, and again when the camera's format changes.
-            const bool changed = !sent_any_static || target.width != sent_static.width ||
-                                 target.height != sent_static.height || target.format != sent_static.format;
-            if (!changed || !source.Next(target, 0, &frame, &ended)) {
-                Sleep(100);
-                continue;
-            }
-            sent_static = target;
-            sent_any_static = true;
-        } else {
-            if (!watching) {
-                if (!paused) {
-                    source.Pause();
-                    paused = true;
-                }
-                Sleep(100);
-                continue;
-            }
-            if (paused) {
-                source.Resume();
-                paused = false;
-                next_tick = win::NowTicks();
-            }
-            if (!source.SelfPaced()) {
-                const int64_t period = static_cast<int64_t>(shm::kTicksPerSecond / target.fps);
-                next_tick += period;
-                if (next_tick < win::NowTicks() - period) {
-                    next_tick = win::NowTicks();  // fell behind: do not try to catch up
-                }
-                ticker.WaitUntil(next_tick);
-            }
-            if (!source.Next(target, 100, &frame, &ended)) {
-                if (ended) {
-                    break;
-                }
-                continue;
-            }
-        }
-
-        const int64_t start = win::NowTicks();
-        vcam_frame vf{};
-        vf.format = static_cast<int32_t>(frame.format);
-        vf.width = frame.width;
-        vf.height = frame.height;
-        for (int i = 0; i < 3; i++) {
-            vf.planes[i] = frame.planes[i];
-            vf.pitches[i] = frame.pitches[i];
-        }
-        vf.colorspace = static_cast<int32_t>(frame.colorspace);
-        vf.timestamp = frame.timestamp;
-        const int sent = vcam_send(producer, &vf);
-        if (sent != VCAM_OK) {
-            PrintError("\nsending a frame failed: %s\n", vcam_error_string(sent));
-            exit_code = 1;
-            break;
-        }
-        window_ms += static_cast<double>(win::NowTicks() - start) / 10000.0;
-        window_frames++;
-    }
-    vcam_close(producer);
-    if (!o.quiet) {
-        Print("\nStopped.\n");
-    }
-    return exit_code;
-}
-
-int CmdList()
-{
-    Print("Monitors (vcam screen N):\n");
-    struct MonitorList {
-        int n = 0;
-    } list;
+    std::vector<MonitorInfo> monitors;
     EnumDisplayMonitors(
         nullptr, nullptr,
         [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
-            auto* l = reinterpret_cast<MonitorList*>(data);
+            auto* list = reinterpret_cast<std::vector<MonitorInfo>*>(data);
             MONITORINFOEXW info{};
             info.cbSize = sizeof(info);
             GetMonitorInfoW(monitor, &info);
-            const RECT& r = info.rcMonitor;
-            Print("  %d  %ldx%ld at (%ld, %ld)%s  %s\n", ++l->n, r.right - r.left, r.bottom - r.top, r.left, r.top,
-                  (info.dwFlags & MONITORINFOF_PRIMARY) ? "  primary" : "", Utf8(info.szDevice).c_str());
+            MonitorInfo m;
+            m.number = static_cast<int>(list->size()) + 1;
+            m.device = info.szDevice;
+            m.rect = info.rcMonitor;
+            m.primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+            list->push_back(m);
             return TRUE;
         },
-        reinterpret_cast<LPARAM>(&list));
+        reinterpret_cast<LPARAM>(&monitors));
+    return monitors;
+}
 
-    Print("\nWindows (vcam window TITLE):\n");
+std::vector<WindowInfo> EnumerateWindows()
+{
+    struct Search {
+        std::vector<WindowInfo> windows;
+        HWND console = GetConsoleWindow();
+    } search;
     EnumWindows(
-        [](HWND hwnd, LPARAM) -> BOOL {
-            if (!IsWindowVisible(hwnd) || GetAncestor(hwnd, GA_ROOTOWNER) != hwnd ||
+        [](HWND hwnd, LPARAM data) -> BOOL {
+            auto* s = reinterpret_cast<Search*>(data);
+            if (hwnd == s->console || !IsWindowVisible(hwnd) || GetAncestor(hwnd, GA_ROOTOWNER) != hwnd ||
                 (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) {
                 return TRUE;
             }
@@ -434,12 +249,44 @@ int CmdList()
             if (cloaked || GetWindowTextW(hwnd, title, 256) == 0) {
                 return TRUE;
             }
+            WindowInfo w;
+            w.handle = hwnd;
+            w.title = title;
             RECT r{};
             GetClientRect(hwnd, &r);
-            Print("  %-60s %ldx%ld\n", Utf8(title).c_str(), r.right, r.bottom);
+            w.width = r.right;
+            w.height = r.bottom;
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+                wchar_t path[MAX_PATH] = {};
+                DWORD size = MAX_PATH;
+                if (QueryFullProcessImageNameW(process, 0, path, &size)) {
+                    const std::wstring full(path);
+                    w.process = full.substr(full.find_last_of(L'\\') + 1);
+                }
+                CloseHandle(process);
+            }
+            s->windows.push_back(w);
             return TRUE;
         },
-        0);
+        reinterpret_cast<LPARAM>(&search));
+    return search.windows;
+}
+
+int CmdList()
+{
+    Print("Monitors (vcam screen N):\n");
+    for (const MonitorInfo& m : EnumerateMonitors()) {
+        const RECT& r = m.rect;
+        Print("  %d  %ldx%ld at (%ld, %ld)%s  %s\n", m.number, r.right - r.left, r.bottom - r.top, r.left, r.top,
+              m.primary ? "  primary" : "", Utf8(m.device).c_str());
+    }
+
+    Print("\nWindows (vcam window TITLE):\n");
+    for (const WindowInfo& w : EnumerateWindows()) {
+        Print("  %-60s %dx%d\n", Utf8(w.title).c_str(), w.width, w.height);
+    }
 
     Print("\nCameras (vcam webcam N|NAME):\n");
     int n = 0;

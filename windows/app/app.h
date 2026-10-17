@@ -1,24 +1,33 @@
-// The vcam command-line tool: installs and manages the cameras, and feeds
-// them from built-in sources (test pattern, colour, image, video, webcam,
-// screen, window).
+// The vcam tool library, shared by the command-line tool (vcam.exe) and the
+// GUI (VCam.exe): installs and manages the cameras, and feeds them from
+// built-in sources (test pattern, colour, image, video, webcam, screen,
+// window).
 #pragma once
 
 #include "common.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <future>
 
 #include "vcam.h"
 #include "vcam/convert.h"
 
 namespace vcam::app {
 
-// --- console output ---------------------------------------------------------------
+// --- output -------------------------------------------------------------------------
 
+// Messages go to the console by default; the GUI installs its own sink.
 void Print(const char* format, ...);
 void PrintError(const char* format, ...);
+using OutputSink = void (*)(bool error, const std::string& text);
+void SetOutputSink(OutputSink sink);
 std::string Utf8(const std::wstring& text);
 std::wstring Wide(const std::string& text);
 std::string ErrorText(DWORD error);
@@ -55,18 +64,30 @@ bool ParseInt(const std::string& text, int* value);
 // --- system management (system.cpp) -------------------------------------------------
 
 struct InstallOptions {
-    int cameras = 1;
+    int cameras = 0;                  // 0 = keep (1 on a first install)
     std::vector<std::wstring> names;  // per camera; empty = keep / default
     uint32_t max_width = 0, max_height = 0;  // 0 = keep / default
     int allow_60fps = -1;                    // -1 = keep
     bool add_to_path = true;
+    // -1: keep; on a first install, Media Foundation where Windows supports it
+    // (Windows 11), DirectShow otherwise.
+    int backend = -1;
+    // Installed by the setup program: the files are already in place and it
+    // owns the Installed apps entry.
+    bool managed = false;
 };
 
+// Whether this Windows has the Windows 11 virtual camera API.
+bool VirtualCamerasSupported();
+
 int CmdInstall(const InstallOptions& options);
-int CmdUninstall();
+int CmdUninstall(bool managed = false);
 int CmdStatus();
 int CmdConfig(Args& args);
 int CmdPlaceholder(Args& args);
+// The picture apps see while nothing feeds a camera (needs administrator rights).
+bool SetPlaceholderImage(const std::wstring& file, std::string* error);
+bool ResetPlaceholderImage(std::string* error);
 int CmdRestartFrameServer();
 int CmdAutostart(Args& args, int argc, wchar_t** argv);
 
@@ -94,6 +115,9 @@ struct Frame {
 class Source {
 public:
     virtual ~Source() = default;
+    // Set while the owner wants the source to stop; long waits inside Next() check it.
+    const std::atomic<bool>* stop_flag = nullptr;
+    bool stopping() const;
     virtual const char* name() const = 0;
     // Opens devices/files. On failure, *error says why.
     virtual bool Start(std::string* error) = 0;
@@ -133,11 +157,82 @@ std::unique_ptr<Source> MakeVideoSource(const std::wstring& path, bool loop);
 std::unique_ptr<Source> MakeWebcamSource(const std::string& selector);
 std::unique_ptr<Source> MakeScreenSource(int monitor, bool cursor);
 std::unique_ptr<Source> MakeWindowSource(const std::string& title, bool cursor);
+std::unique_ptr<Source> MakeWindowSourceFor(HWND window, bool cursor);
 // Screen/window capture scales on the GPU, so it needs the placement up front.
 void ConfigureCapture(Source& source, ScaleMode scale, Rgb background);
 
-int RunSource(Source& source, const SourceOptions& options);
+// --- running a source ---------------------------------------------------------------
+
+using SourceFactory = std::function<std::unique_ptr<Source>()>;
+
+struct RunnerStats {
+    bool running = false;   // started and not yet ended
+    bool watching = false;  // an application is streaming the camera (or `always`)
+    bool ended = false;     // the source finished: end of the file, window closed, error
+    std::string error;      // why it ended, when it failed
+    vcam_status camera{};   // what the camera streams, from the SDK
+    double fps = 0;         // frames sent per second
+    double ms_per_frame = 0;  // time spent converting each frame into the camera
+    uint64_t frames = 0;
+};
+
+// Feeds one camera from one source on a thread of its own. The source is made
+// and used on that thread (Media Foundation and capture need their COM
+// apartment there).
+class SourceRunner {
+public:
+    SourceRunner(SourceFactory factory, const SourceOptions& options);
+    SourceRunner(const SourceRunner&) = delete;
+    SourceRunner& operator=(const SourceRunner&) = delete;
+    ~SourceRunner();
+
+    // Opens the source and the camera; returns once both work, or false with *error.
+    bool Start(std::string* error);
+    void Stop();
+    RunnerStats Stats() const;
+    std::string name() const;
+    const SourceOptions& options() const { return options_; }
+
+    // Called on the runner's thread with every frame sent (for previews), and
+    // the camera's current size (0 when no application asked yet).
+    using FrameTap = std::function<void(const Frame& frame, const Target& target)>;
+    void SetTap(FrameTap tap);
+    // Keep producing although no application watches (the GUI's preview is visible).
+    void SetKeepAlive(bool keep) { keep_alive_ = keep; }
+
+private:
+    void Run(std::promise<std::string>* started);
+
+    SourceFactory factory_;
+    SourceOptions options_;
+    std::thread thread_;
+    std::atomic<bool> stop_{false};
+    std::atomic<bool> keep_alive_{false};
+    mutable std::mutex lock_;  // everything below
+    RunnerStats stats_;
+    std::string name_;
+    FrameTap tap_;
+};
+
+// The command-line loop: runs the source until Ctrl+C, with a status line.
+int RunSource(SourceFactory factory, const SourceOptions& options);
 int CmdList();
+
+struct MonitorInfo {
+    int number = 0;  // 1-based, as `vcam screen N` takes it
+    std::wstring device;
+    RECT rect{};
+    bool primary = false;
+};
+std::vector<MonitorInfo> EnumerateMonitors();
+
+struct WindowInfo {
+    HWND handle = nullptr;
+    std::wstring title;
+    std::wstring process;  // executable name
+    int width = 0, height = 0;
+};
+std::vector<WindowInfo> EnumerateWindows();
 
 // Loads any image WIC can decode as top-down BGRA, applying EXIF orientation.
 bool LoadImageBgra(const std::wstring& path, std::vector<uint8_t>* pixels, int* width, int* height,

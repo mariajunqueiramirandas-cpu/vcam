@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(vcam VERSION 2.0.0 LANGUAGES CXX)
+project(vcam VERSION 2.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,7 +15,10 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_compile_options(/W4 /WX /permissive- /utf-8 /Zc:__cplusplus /guard:cf /external:anglebrackets /external:W0)
     add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-    add_link_options(/guard:cf /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT)
+    add_link_options(/guard:cf /DYNAMICBASE /NXCOMPAT)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        add_link_options(/HIGHENTROPYVA)  # 64-bit only
+    endif()
 else()
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()

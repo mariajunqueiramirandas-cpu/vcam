@@ -1,0 +1,6 @@
+; No LIBRARY line: the 32-bit build is named vcamdshow32.dll.
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE
+    DllRegisterServer PRIVATE
+    DllUnregisterServer PRIVATE

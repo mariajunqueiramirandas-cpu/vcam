@@ -3,3 +3,4 @@ build/
 out/
 *.user
 __pycache__/
+.claude/worktrees/

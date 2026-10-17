@@ -1,26 +1,32 @@
 # vcam
 
-A virtual camera for Windows 11. It shows up in every app as a real camera (Windows Camera, Teams, Zoom,
-Meet in the browser, Discord, OBS...). You feed it from the `vcam` tool (colour bars, a picture, a video, your
-screen, a window, another webcam) or from your own program through a small C SDK or Python.
+A virtual camera for Windows 10 and 11. It shows up in your apps as a real camera (Teams, Zoom, Meet in the
+browser, Discord, OBS and, on Windows 11, the Windows Camera app). You choose what it shows in the **VCam** app:
+colour bars, a colour, a picture, a video, your screen, a window or another webcam. You can also feed it from
+the `vcam` command line, or from your own program through a small C SDK or Python.
 
 ```
-vcam install                 # once, as administrator
-vcam screen                  # share your screen as a camera
-vcam image me.png --fill     # or a picture
-vcam webcam --mirror         # or your real webcam, mirrored
+VCam-Setup-2.1.0.<build>.exe     # install, then open VCam from the Start menu
+vcam screen                       # or from a terminal: share your screen as a camera
+vcam image me.png --fill          # a picture
+vcam webcam --mirror              # your real webcam, mirrored
 ```
 
-vcam runs entirely in user mode. There is no driver, no test signing and no Secure Boot change. It uses
-the Windows 11 virtual camera API (`MFCreateVirtualCamera`). Windows Frame Server, the service that already
-shares physical cameras between apps, loads vcam's media source and hands its frames to every application.
+vcam runs entirely in user mode. There is no driver, no test signing and no Secure Boot change.
+- **Windows 11:** it uses the virtual camera API (`MFCreateVirtualCamera`). Windows Frame Server, the service
+  that already shares physical cameras between apps, loads vcam's media source and hands its frames to every
+  application.
+- **Windows 10:** it registers a DirectShow capture filter, the way OBS Virtual Camera does. Desktop apps load
+  the filter and read the same frames.
 
 ## Compared to OBS Virtual Camera
 
 | | vcam | OBS Virtual Camera |
 | --- | --- | --- |
-| Apps that use Media Foundation / WinRT only, such as the Windows Camera app | yes | no (DirectShow filter) |
-| DirectShow apps | yes, through Frame Server | yes |
+| Windows 10 | yes (DirectShow, 64-bit and 32-bit apps) | yes |
+| Apps that use Media Foundation / WinRT only, such as the Windows Camera app | yes, on Windows 11 | no (DirectShow filter) |
+| DirectShow apps | yes | yes |
+| Control app | VCam: live preview of what apps receive, tally light, sources, settings, tray | OBS itself |
 | Formats offered to apps | 12 sizes up to 1080p (4K optional), 30 and 60 fps, NV12 / YUY2 / RGB32; apps pick | one, fixed to OBS's output settings |
 | Cameras | up to 4, each with its own name | 1 |
 | Feed it from your own code | C ABI (`vcam.dll`) and Python | no public API |
@@ -34,14 +40,26 @@ camera privacy switches apply to it, and several apps can use it at once.
 
 ## Requirements
 
-- Windows 11 (build 22000 or later), x64.
+- Windows 10 (version 1809 or later) or Windows 11, x64. On Windows 10 the camera reaches desktop apps
+  (DirectShow); the Windows Camera app and other Store apps only see cameras on Windows 11.
 - Administrator rights to install. Running sources works for every user; administrators get a few extras, see
   [How it works](#how-it-works).
+- The VCam app uses the Microsoft Edge WebView2 Runtime, which Windows 11 and up-to-date Windows 10 already have.
 
 ## Install
 
-1. Download the `vcam-x64` artifact from the latest successful run of the **build** workflow, or
-   [build it](#building), and extract it.
+Download **VCam-Setup-*version*.exe** from the [Releases](../../releases) page and run it. Every merged pull
+request publishes a release, and every open pull request has a `pr-<number>` prerelease with its own build,
+linked from a comment on the pull request. The builds are not code-signed: if SmartScreen warns, choose
+*More info*, then *Run anyway*.
+
+The setup program installs to `C:\Program Files\vcam`, adds VCam to the Start menu and registers one camera,
+choosing the backend Windows supports. Upgrades keep your cameras and settings. Uninstall it from
+*Installed apps*.
+
+Without the setup program, use the portable zip (also on the Releases page) or [build it](#building):
+
+1. Extract it.
 2. In an **administrator** terminal, in the extracted folder:
 
    ```
@@ -58,11 +76,26 @@ camera privacy switches apply to it, and several apps can use it at once.
    | `--max-resolution 1440p\|4k\|WxH` | largest mode offered (default 1080p) |
    | `--no-60fps` | offer 30 fps modes only |
    | `--no-path` | do not add vcam to `PATH` |
+   | `--backend mediafoundation\|directshow` | force a backend (default: Media Foundation on Windows 11, DirectShow on Windows 10) |
 
 Running `vcam install` again upgrades or repairs an installation; files that are in use are replaced at the
 next restart. `vcam uninstall` removes everything except the settings folder `%ProgramData%\vcam`.
 
 ## Use
+
+### The VCam app
+
+Open **VCam** from the Start menu. The viewfinder shows exactly what apps receive, and its tally light says
+what is happening: red while an app is watching, amber when a source runs but no app has opened the camera yet.
+Pick a source on the right, adjust the picture (fit, fill or stretch, mirror, upside down, background colour)
+and press the button under them. Each camera has its own tab.
+
+Settings (the gear) rename cameras and add up to four, set the largest video mode and 60 fps, choose the
+placeholder picture apps see while nothing plays, and start VCam when you sign in. With that on, the cameras
+that were running come back on without a window. Closing the window while a camera runs keeps it running in the
+notification area.
+
+### The command line
 
 Every source streams until Ctrl+C and pauses while no application is using the camera.
 
@@ -153,6 +186,14 @@ with vcam.Camera(fmt="bgr") as cam:       # an OpenCV frame is BGR
 
 - **Cameras** are registered once, for all users and with system lifetime, so they exist whether or not anything
   feeds them. vcam tags each camera, and an elevated `vcam` re-registers any camera Windows dropped.
+- **On Windows 10**, which has no virtual camera API, each camera is a DirectShow capture device
+  (`vcamdshow.dll`, and `vcamdshow32.dll` for 32-bit apps) that apps load themselves. Desktop apps that use
+  DirectShow see it: Zoom, Teams, Skype, Discord, OBS, and Chrome, Edge and Firefox, so Meet and other web
+  apps work too. The Windows Camera app and other Store apps do not, the same as with OBS Virtual Camera. Each
+  camera offers every standard size in NV12, YUY2, I420 and RGB32 at 30 and 60 fps. Several apps can use a
+  camera at once: the first one sets the format, and the others convert from it. Producer and apps meet in
+  the user's session, so this works without administrator rights. On Windows 11,
+  `vcam install --backend directshow` forces this backend.
 - **The media source** (`vcamsource.dll`) runs inside Frame Server as LOCAL SERVICE. Each camera advertises
   NV12, YUY2 and RGB32 at standard sizes. While an app streams, a high-priority thread delivers samples at the
   negotiated rate. A producer frame goes out as soon as it arrives, and the last one repeats when the producer is
@@ -193,18 +234,26 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The binaries land in `build\bin\Release`: `vcam.exe`, `vcamsource.dll` and `vcam.dll`. Run `vcam install` from
-there. The portable core and its tests also build on Linux (`cmake -S . -B build && cmake --build build && ctest --test-dir build`).
+The binaries land in `build\bin\Release`: `vcam.exe`, `vcam-gui.exe`, `vcamsource.dll`, `vcamdshow.dll` and
+`vcam.dll`. Configuring downloads the WebView2 SDK from NuGet (pinned by hash; set `VCAM_WEBVIEW2_DIR` to an
+extracted package to build offline). The 32-bit DirectShow filter for 32-bit apps on Windows 10 comes from a
+second build: `cmake -S . -B build32 -A Win32`, then `cmake --build build32 --config Release`.
+The setup program needs [Inno Setup](https://jrsoftware.org/isinfo.php) 6.4 or later:
+`iscc /DAppVersion=2.1.0 /DDist=..\dist installer\vcam.iss`, with `dist` laid out like the portable zip.
+The portable core and its tests also build on Linux (`cmake -S . -B build && cmake --build build && ctest --test-dir build`).
 
 | Path | What |
 | --- | --- |
 | `core/` | portable: pixel formats, conversion and scaling (+ SSE4.1), shared-memory ring, frame pacing, test pattern and placeholder |
-| `windows/source/` | `vcamsource.dll`, the Media Foundation media source Frame Server loads |
+| `windows/source/` | `vcamsource.dll`, the Media Foundation media source Frame Server loads (Windows 11) |
+| `windows/dshow/` | `vcamdshow.dll` / `vcamdshow32.dll`, the DirectShow capture filter (Windows 10) |
 | `windows/sdk/` | `vcam.dll` + `vcam.h`, the producer SDK |
-| `windows/app/` | `vcam.exe`: install / status / config, and the sources |
-| `windows/common/` | names, configuration, logging and shared memory shared by all three |
+| `windows/app/` | the tool library (install / status / config, the sources, the producer loop) and `vcam.exe` |
+| `windows/gui/` | `vcam-gui.exe`, the VCam app; `ui/` is its interface |
+| `windows/common/` | names, configuration, logging, shared memory and the consumer side, shared by all of them |
+| `installer/` | the setup program (Inno Setup) |
 | `python/` | the Python binding and an example |
-| `tests/` | unit tests for the core, and an end-to-end test that drives the media source like Frame Server does |
+| `tests/` | unit tests for the core, and end-to-end tests that drive the camera backends the way Windows and apps do |
 
 ### Tests
 
@@ -215,3 +264,7 @@ there. The portable core and its tests also build on Linux (`cmake -S . -B build
   sample allocator, start, sample requests, format switches and shutdown. A real producer feeds it, and the test
   checks colours, letterboxing, mirroring, re-rendering after a format change, the 30 fps pacing and the
   placeholder.
+- `dshow_test`: loads `vcamdshow.dll` in-process and connects its pin to a pretend application's pin, the way a
+  DirectShow graph does: capabilities, all four formats (RGB32 bottom-up), a renderer asking for a wider stride,
+  format changes and reconnection, pacing, the placeholder, and two applications sharing a camera. CI runs it in
+  64-bit and 32-bit builds.

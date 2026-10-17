@@ -9,6 +9,7 @@
 #pragma once
 
 #include "common.h"
+#include "feed.h"
 
 #include <objbase.h>
 #include <initguid.h>  // define the GUIDs used below in this module instead of linking mfuuid.lib
@@ -39,43 +40,6 @@ using Microsoft::WRL::ComPtr;
 extern std::atomic<long> g_objects;
 
 class MediaSource;
-
-// Consumer side of the shared-memory ring for one camera.
-class FrameFeed {
-public:
-    explicit FrameFeed(int camera);
-
-    // Sets the format the stream delivers and renders the placeholder for it.
-    void Configure(PixelFormat format, int width, int height, uint32_t fps_num, uint32_t fps_den);
-    // Attaches to the ring when possible and keeps the request and heartbeat fresh.
-    void Tick(int64_t now);
-    // The stream stopped: tell the producer nobody is watching.
-    void Stop();
-
-    HANDLE frame_event() const { return shm_.is_open() ? shm_.frame_event() : nullptr; }
-    uint64_t latest() const;
-    bool producer_alive(int64_t now) const;
-
-    // Writes the newest frame, or the placeholder, into dst. Returns the
-    // producer frame number written, 0 for the placeholder.
-    uint64_t Render(const ImageSpan& dst, int64_t now);
-    void CountDelivery(bool fresh);
-
-private:
-    void LogProducerState(int64_t now);
-
-    int camera_;
-    Config config_;
-    SharedFrames shm_;
-    Converter converter_;
-    shm::FrameRequest request_;
-    std::vector<uint8_t> placeholder_;
-    PixelFormat format_ = PixelFormat::Unknown;
-    int width_ = 0, height_ = 0;
-    int64_t next_attach_ = 0;
-    bool request_published_ = false;
-    bool producer_was_alive_ = false;
-};
 
 class MediaStream final : public IMFMediaStream2 {
 public:
