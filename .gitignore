@@ -1,18 +1,4 @@
-# build output
-x64/
-bin/
-obj/
-driver/x64/
-app/obj/
-packages/
-*.binlog
-*.obj
-*.pdb
-*.ilk
-*.sys
-*.cat
-*.cer
-*.pfx
-dist/
+build/
 .vs/
+out/
 *.user

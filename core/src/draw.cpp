@@ -1,0 +1,370 @@
+#include "vcam/draw.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstring>
+
+namespace vcam {
+namespace {
+
+// 5x7 glyphs for ASCII 32..126 plus two descender rows; each row uses the low
+// 5 bits, bit 4 is the left column.
+const uint8_t kFont[95][9] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},  // ' '
+    {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04, 0x00, 0x00},  // !
+    {0x0A, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},  // "
+    {0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A, 0x00, 0x00},  // #
+    {0x04, 0x0F, 0x14, 0x0E, 0x05, 0x1E, 0x04, 0x00, 0x00},  // $
+    {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03, 0x00, 0x00},  // %
+    {0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D, 0x00, 0x00},  // &
+    {0x0C, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},  // '
+    {0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02, 0x00, 0x00},  // (
+    {0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08, 0x00, 0x00},  // )
+    {0x00, 0x04, 0x15, 0x0E, 0x15, 0x04, 0x00, 0x00, 0x00},  // *
+    {0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00, 0x00, 0x00},  // +
+    {0x00, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x08, 0x00, 0x00},  // ,
+    {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00, 0x00, 0x00},  // -
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00, 0x00},  // .
+    {0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00, 0x00},  // /
+    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E, 0x00, 0x00},  // 0
+    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E, 0x00, 0x00},  // 1
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F, 0x00, 0x00},  // 2
+    {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E, 0x00, 0x00},  // 3
+    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02, 0x00, 0x00},  // 4
+    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E, 0x00, 0x00},  // 5
+    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E, 0x00, 0x00},  // 6
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08, 0x00, 0x00},  // 7
+    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E, 0x00, 0x00},  // 8
+    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C, 0x00, 0x00},  // 9
+    {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x00},  // :
+    {0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x04, 0x08, 0x00, 0x00},  // ;
+    {0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02, 0x00, 0x00},  // <
+    {0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00, 0x00, 0x00},  // =
+    {0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08, 0x00, 0x00},  // >
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04, 0x00, 0x00},  // ?
+    {0x0E, 0x11, 0x01, 0x0D, 0x15, 0x15, 0x0E, 0x00, 0x00},  // @
+    {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11, 0x00, 0x00},  // A
+    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E, 0x00, 0x00},  // B
+    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E, 0x00, 0x00},  // C
+    {0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C, 0x00, 0x00},  // D
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F, 0x00, 0x00},  // E
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10, 0x00, 0x00},  // F
+    {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F, 0x00, 0x00},  // G
+    {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11, 0x00, 0x00},  // H
+    {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E, 0x00, 0x00},  // I
+    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C, 0x00, 0x00},  // J
+    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11, 0x00, 0x00},  // K
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F, 0x00, 0x00},  // L
+    {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11, 0x00, 0x00},  // M
+    {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x00, 0x00},  // N
+    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E, 0x00, 0x00},  // O
+    {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10, 0x00, 0x00},  // P
+    {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D, 0x00, 0x00},  // Q
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11, 0x00, 0x00},  // R
+    {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E, 0x00, 0x00},  // S
+    {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x00},  // T
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E, 0x00, 0x00},  // U
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04, 0x00, 0x00},  // V
+    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A, 0x00, 0x00},  // W
+    {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11, 0x00, 0x00},  // X
+    {0x11, 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x00, 0x00},  // Y
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F, 0x00, 0x00},  // Z
+    {0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E, 0x00, 0x00},  // [
+    {0x00, 0x10, 0x08, 0x04, 0x02, 0x01, 0x00, 0x00, 0x00},  // backslash
+    {0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E, 0x00, 0x00},  // ]
+    {0x04, 0x0A, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},  // ^
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00},  // _
+    {0x08, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},  // `
+    {0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F, 0x00, 0x00},  // a
+    {0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x1E, 0x00, 0x00},  // b
+    {0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E, 0x00, 0x00},  // c
+    {0x01, 0x01, 0x0D, 0x13, 0x11, 0x11, 0x0F, 0x00, 0x00},  // d
+    {0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E, 0x00, 0x00},  // e
+    {0x06, 0x09, 0x08, 0x1C, 0x08, 0x08, 0x08, 0x00, 0x00},  // f
+    {0x00, 0x00, 0x0F, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x0E},  // g
+    {0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x11, 0x00, 0x00},  // h
+    {0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E, 0x00, 0x00},  // i
+    {0x02, 0x00, 0x06, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C},  // j
+    {0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12, 0x00, 0x00},  // k
+    {0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E, 0x00, 0x00},  // l
+    {0x00, 0x00, 0x1A, 0x15, 0x15, 0x11, 0x11, 0x00, 0x00},  // m
+    {0x00, 0x00, 0x16, 0x19, 0x11, 0x11, 0x11, 0x00, 0x00},  // n
+    {0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E, 0x00, 0x00},  // o
+    {0x00, 0x00, 0x1E, 0x11, 0x11, 0x11, 0x1E, 0x10, 0x10},  // p
+    {0x00, 0x00, 0x0F, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x01},  // q
+    {0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10, 0x00, 0x00},  // r
+    {0x00, 0x00, 0x0E, 0x10, 0x0E, 0x01, 0x1E, 0x00, 0x00},  // s
+    {0x08, 0x08, 0x1C, 0x08, 0x08, 0x09, 0x06, 0x00, 0x00},  // t
+    {0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D, 0x00, 0x00},  // u
+    {0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04, 0x00, 0x00},  // v
+    {0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A, 0x00, 0x00},  // w
+    {0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x00, 0x00},  // x
+    {0x00, 0x00, 0x11, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x0E},  // y
+    {0x00, 0x00, 0x1F, 0x02, 0x04, 0x08, 0x1F, 0x00, 0x00},  // z
+    {0x02, 0x04, 0x04, 0x08, 0x04, 0x04, 0x02, 0x00, 0x00},  // {
+    {0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x00},  // |
+    {0x08, 0x04, 0x04, 0x02, 0x04, 0x04, 0x08, 0x00, 0x00},  // }
+    {0x00, 0x00, 0x08, 0x15, 0x02, 0x00, 0x00, 0x00, 0x00},  // ~
+};
+
+inline uint8_t* PixelAt(const ImageSpan& img, int x, int y)
+{
+    return img.plane[0] + static_cast<ptrdiff_t>(img.pitch[0]) * y + static_cast<ptrdiff_t>(x) * 4;
+}
+
+inline void Blend(uint8_t* px, Rgb c, int alpha)
+{
+    px[0] = static_cast<uint8_t>((c.b * alpha + px[0] * (255 - alpha) + 127) / 255);
+    px[1] = static_cast<uint8_t>((c.g * alpha + px[1] * (255 - alpha) + 127) / 255);
+    px[2] = static_cast<uint8_t>((c.r * alpha + px[2] * (255 - alpha) + 127) / 255);
+    px[3] = 255;
+}
+
+inline void Put(uint8_t* px, Rgb c)
+{
+    px[0] = c.b, px[1] = c.g, px[2] = c.r, px[3] = 255;
+}
+
+bool IsBgra(const ImageSpan& img)
+{
+    return img.format == PixelFormat::BGRA && IsUsable(img);
+}
+
+// Coverage-based anti-aliased fill of a signed distance function over a box.
+template <typename Sdf>
+void FillShape(const ImageSpan& img, double x0, double y0, double x1, double y1, Rgb color, int opacity, Sdf sdf)
+{
+    const int ix0 = std::max(0, static_cast<int>(std::floor(x0)));
+    const int iy0 = std::max(0, static_cast<int>(std::floor(y0)));
+    const int ix1 = std::min(img.width, static_cast<int>(std::ceil(x1)));
+    const int iy1 = std::min(img.height, static_cast<int>(std::ceil(y1)));
+    for (int y = iy0; y < iy1; y++) {
+        for (int x = ix0; x < ix1; x++) {
+            const double d = sdf(x + 0.5, y + 0.5);
+            const double coverage = std::clamp(0.5 - d, 0.0, 1.0);
+            if (coverage > 0) {
+                Blend(PixelAt(img, x, y), color, static_cast<int>(coverage * opacity + 0.5));
+            }
+        }
+    }
+}
+
+double RoundRectSdf(double px, double py, double cx, double cy, double hw, double hh, double r)
+{
+    const double qx = std::fabs(px - cx) - (hw - r);
+    const double qy = std::fabs(py - cy) - (hh - r);
+    const double ox = std::max(qx, 0.0), oy = std::max(qy, 0.0);
+    return std::sqrt(ox * ox + oy * oy) + std::min(std::max(qx, qy), 0.0) - r;
+}
+
+double CircleSdf(double px, double py, double cx, double cy, double r)
+{
+    return std::hypot(px - cx, py - cy) - r;
+}
+
+double SegmentSdf(double px, double py, double ax, double ay, double bx, double by, double half_width)
+{
+    const double vx = bx - ax, vy = by - ay;
+    const double t = std::clamp(((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy), 0.0, 1.0);
+    return std::hypot(px - (ax + t * vx), py - (ay + t * vy)) - half_width;
+}
+
+}  // namespace
+
+int TextWidth(const char* text, int scale)
+{
+    const int n = text ? static_cast<int>(strlen(text)) : 0;
+    return n > 0 ? (n * 6 - 1) * scale : 0;
+}
+
+int TextHeight(int scale)
+{
+    return 7 * scale;
+}
+
+void DrawText(const ImageSpan& img, int x, int y, int scale, Rgb color, const char* text)
+{
+    if (!text || scale < 1 || !IsBgra(img)) {
+        return;
+    }
+    for (const char* p = text; *p; p++, x += 6 * scale) {
+        const unsigned char ch = static_cast<unsigned char>(*p);
+        if (ch < 32 || ch > 126) {
+            continue;
+        }
+        const uint8_t* glyph = kFont[ch - 32];
+        for (int row = 0; row < 9; row++) {
+            for (int col = 0; col < 5; col++) {
+                if (!(glyph[row] & (0x10 >> col))) {
+                    continue;
+                }
+                const int px0 = x + col * scale, py0 = y + row * scale;
+                for (int yy = std::max(py0, 0); yy < std::min(py0 + scale, img.height); yy++) {
+                    for (int xx = std::max(px0, 0); xx < std::min(px0 + scale, img.width); xx++) {
+                        Put(PixelAt(img, xx, yy), color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void DrawTextOutlined(const ImageSpan& img, int x, int y, int scale, Rgb color, const char* text)
+{
+    const Rgb outline{0, 0, 0};
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx || dy) {
+                DrawText(img, x + dx * scale, y + dy * scale, scale, outline, text);
+            }
+        }
+    }
+    DrawText(img, x, y, scale, color, text);
+}
+
+void FillRect(const ImageSpan& img, int x, int y, int w, int h, Rgb color, int opacity)
+{
+    if (!IsBgra(img)) {
+        return;
+    }
+    const int x0 = std::max(x, 0), y0 = std::max(y, 0);
+    const int x1 = std::min(x + w, img.width), y1 = std::min(y + h, img.height);
+    for (int yy = y0; yy < y1; yy++) {
+        uint8_t* px = PixelAt(img, x0, yy);
+        for (int xx = x0; xx < x1; xx++, px += 4) {
+            if (opacity >= 255) {
+                Put(px, color);
+            } else {
+                Blend(px, color, opacity);
+            }
+        }
+    }
+}
+
+void RenderTestPattern(const ImageSpan& img, uint64_t frame, double seconds, const char* const* lines,
+                       int line_count)
+{
+    if (!IsBgra(img)) {
+        return;
+    }
+    const int w = img.width, h = img.height;
+    static const Rgb bars[7] = {
+        {191, 191, 191}, {191, 191, 0}, {0, 191, 191}, {0, 191, 0}, {191, 0, 191}, {191, 0, 0}, {0, 0, 191},
+    };
+    static const Rgb castellation[7] = {
+        {0, 0, 191}, {19, 19, 19}, {191, 0, 191}, {19, 19, 19}, {0, 191, 191}, {19, 19, 19}, {191, 191, 191},
+    };
+    const int bars_h = h * 60 / 100;
+    const int cast_h = h * 8 / 100;
+    for (int i = 0; i < 7; i++) {
+        const int x0 = w * i / 7, x1 = w * (i + 1) / 7;
+        FillRect(img, x0, 0, x1 - x0, bars_h, bars[i]);
+        FillRect(img, x0, bars_h, x1 - x0, cast_h, castellation[i]);
+    }
+    // Luma ramp across the bottom.
+    const int ramp_y = bars_h + cast_h;
+    for (int y = ramp_y; y < h; y++) {
+        uint8_t* px = PixelAt(img, 0, y);
+        for (int x = 0; x < w; x++, px += 4) {
+            const uint8_t v = static_cast<uint8_t>(w > 1 ? x * 255 / (w - 1) : 0);
+            Put(px, Rgb{v, v, v});
+        }
+    }
+    // Marker that sweeps the ramp once every two seconds; judder or jumps in its
+    // motion show dropped or repeated frames.
+    const double phase = std::fmod(seconds, 2.0) / 2.0;
+    const int marker = std::max(4, h / 12);
+    const int mx = static_cast<int>(phase * (w - marker));
+    const int my = ramp_y + (h - ramp_y - marker) / 2;
+    FillRect(img, mx, my, marker, marker, Rgb{235, 30, 30});
+
+    // A frame-parity tick: alternates every frame.
+    const int tick = std::max(4, h / 40);
+    FillRect(img, w - 3 * tick, 2 * tick, tick, tick, (frame & 1) ? Rgb{255, 255, 255} : Rgb{0, 0, 0});
+
+    // Border: shows whether the consumer crops the picture.
+    const int border = std::max(1, h / 360);
+    const Rgb white{255, 255, 255};
+    FillRect(img, 0, 0, w, border, white);
+    FillRect(img, 0, h - border, w, border, white);
+    FillRect(img, 0, 0, border, h, white);
+    FillRect(img, w - border, 0, border, h, white);
+
+    // Text panel in the centre.
+    if (line_count > 0 && lines) {
+        line_count = std::min(line_count, 4);
+        const int scale = std::max(1, h / 135);
+        const int line_h = TextHeight(scale) + 4 * scale;
+        int panel_w = 0;
+        for (int i = 0; i < line_count; i++) {
+            panel_w = std::max(panel_w, TextWidth(lines[i], scale));
+        }
+        panel_w += 8 * scale;
+        const int panel_h = line_count * line_h + 4 * scale;
+        const int px = (w - panel_w) / 2, py = (bars_h - panel_h) / 2;
+        FillRect(img, px, py, panel_w, panel_h, Rgb{0, 0, 0}, 190);
+        for (int i = 0; i < line_count; i++) {
+            const int tw = TextWidth(lines[i], scale);
+            DrawText(img, (w - tw) / 2, py + 4 * scale + i * line_h, scale, white, lines[i]);
+        }
+    }
+}
+
+void RenderPlaceholder(const ImageSpan& img, const char* title, const char* subtitle)
+{
+    if (!IsBgra(img)) {
+        return;
+    }
+    const int w = img.width, h = img.height;
+    // Vertical gradient.
+    for (int y = 0; y < h; y++) {
+        const int t = h > 1 ? y * 256 / (h - 1) : 0;
+        const Rgb c{static_cast<uint8_t>(30 - 16 * t / 256), static_cast<uint8_t>(34 - 18 * t / 256),
+                    static_cast<uint8_t>(46 - 24 * t / 256)};
+        uint8_t* px = PixelAt(img, 0, y);
+        for (int x = 0; x < w; x++, px += 4) {
+            Put(px, c);
+        }
+    }
+
+    // Camera-off icon.
+    const double unit = std::min(w, h) / 100.0;
+    const double cx = w / 2.0, cy = h * 0.40;
+    const Rgb icon{120, 128, 148};
+    const double body_hw = 15 * unit, body_hh = 10 * unit;
+    FillShape(img, cx - body_hw - 1, cy - body_hh - 1, cx + body_hw + 1, cy + body_hh + 1, icon, 255,
+              [&](double px, double py) {
+                  const double body = RoundRectSdf(px, py, cx - 3 * unit, cy, body_hw - 3 * unit, body_hh, 2.5 * unit);
+                  const double lens = CircleSdf(px, py, cx - 3 * unit, cy, 5.5 * unit);
+                  return std::max(body, -lens);
+              });
+    // Viewfinder wedge on the right of the body.
+    FillShape(img, cx + 9 * unit, cy - 8 * unit, cx + body_hw + 2 * unit, cy + 8 * unit, icon, 255,
+              [&](double px, double py) {
+                  const double rx = px - (cx + 12 * unit);
+                  const double half = 3 * unit + std::max(0.0, rx) * 1.2;
+                  return std::max(std::fabs(rx) - 3 * unit, std::fabs(py - cy) - half);
+              });
+    FillShape(img, cx - 3 * unit - 3 * unit, cy - 3 * unit, cx, cy + 3 * unit, icon, 255,
+              [&](double px, double py) { return CircleSdf(px, py, cx - 3 * unit, cy, 2.5 * unit); });
+    // Slash.
+    const double ax = cx - 18 * unit, ay = cy - 14 * unit, bx = cx + 18 * unit, by = cy + 14 * unit;
+    FillShape(img, ax - 3 * unit, ay - 3 * unit, bx + 3 * unit, by + 3 * unit, Rgb{30, 34, 46}, 255,
+              [&](double px, double py) { return SegmentSdf(px, py, ax, ay, bx, by, 3.2 * unit); });
+    FillShape(img, ax - 3 * unit, ay - 3 * unit, bx + 3 * unit, by + 3 * unit, Rgb{222, 92, 92}, 255,
+              [&](double px, double py) { return SegmentSdf(px, py, ax, ay, bx, by, 1.6 * unit); });
+
+    const int title_scale = std::max(1, h / 110);
+    const int sub_scale = std::max(1, h / 200);
+    int ty = static_cast<int>(cy + 22 * unit);
+    if (title && *title) {
+        DrawText(img, (w - TextWidth(title, title_scale)) / 2, ty, title_scale, Rgb{226, 230, 238}, title);
+        ty += TextHeight(title_scale) + 6 * sub_scale;
+    }
+    if (subtitle && *subtitle) {
+        DrawText(img, (w - TextWidth(subtitle, sub_scale)) / 2, ty, sub_scale, Rgb{140, 148, 166}, subtitle);
+    }
+}
+
+}  // namespace vcam
