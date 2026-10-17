@@ -33,6 +33,11 @@
     <TargetName>vcam</TargetName>
     <OutDir>$(IntDir)</OutDir>
   </PropertyGroup>
+  <!-- WDK-from-NuGet builds look for stampinf.exe under bin\<ver>\x86, but the package only ships the x64 one. -->
+  <PropertyGroup Condition="'$(WDK_NuGet)' == 'true'">
+    <InfToolPath>$(WDKBinRoot_x64)\</InfToolPath>
+    <InfToolArchitecture>Native64Bit</InfToolArchitecture>
+  </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
