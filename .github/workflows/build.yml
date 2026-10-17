@@ -32,9 +32,16 @@ jobs:
       - name: Collect the installable package
         shell: pwsh
         run: |
+          $files = @(
+            'driver\x64\Release\vcam\vcam.sys'
+            'driver\x64\Release\vcam\vcam.inf'
+            'driver\x64\Release\vcam\vcam.cat'
+            'bin\x64\Release\vcamctl.exe'
+            'scripts\install.ps1'
+            'scripts\uninstall.ps1'
+          )
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item driver\x64\Release\vcam\vcam.sys, driver\x64\Release\vcam\vcam.inf, driver\x64\Release\vcam\vcam.cat `
-                    bin\x64\Release\vcamctl.exe, scripts\install.ps1, scripts\uninstall.ps1 -Destination dist\
+          Copy-Item -Path $files -Destination dist\
           Get-ChildItem dist | Select-Object -ExpandProperty FullName
 
       - uses: actions/upload-artifact@v4
