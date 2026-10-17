@@ -22,8 +22,18 @@ jobs:
 
   windows:
     runs-on: windows-2025
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          # The project version plus the run number: 2.1.0.57.
+          $project = (Select-String -Path CMakeLists.txt -Pattern 'project\(vcam VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          "version=$project.${{ github.run_number }}" >> $env:GITHUB_OUTPUT
 
       - name: Configure
         run: cmake -S . -B build -A x64
@@ -50,13 +60,104 @@ jobs:
           $bin = 'build\bin\Release'
           $lib = 'build\lib\Release'
           New-Item -ItemType Directory -Force dist, dist\sdk, dist\python | Out-Null
-          Copy-Item "$bin\vcam.exe", "$bin\vcamsource.dll", "$bin\vcam.dll" -Destination dist\
+          Copy-Item "$bin\vcam.exe", "$bin\vcam-gui.exe", "$bin\vcamsource.dll", "$bin\vcam.dll" -Destination dist\
           Copy-Item "$lib\vcam.lib", 'windows\sdk\include\vcam.h' -Destination dist\sdk\
           Copy-Item 'python\vcam.py', 'python\example.py' -Destination dist\python\
           Copy-Item README.md -Destination dist\
           Get-ChildItem -Recurse dist | Select-Object -ExpandProperty FullName
 
+      - name: Setup program and portable zip
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $inno = "${env:ProgramFiles(x86)}\Inno Setup 6"
+            if (-not (Test-Path "$inno\ISCC.exe")) {
+              choco install innosetup --no-progress -y | Out-Host
+            }
+            $env:PATH = "$inno;$env:PATH"
+          }
+          New-Item -ItemType Directory -Force release | Out-Null
+          iscc /Q "/DAppVersion=$version" "/DFileVersion=$version" /DDist=..\dist /DOutput=..\release installer\vcam.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist\* -DestinationPath "release\VCam-$version-portable-x64.zip"
+          Get-ChildItem release | Format-Table Name, Length
+
       - uses: actions/upload-artifact@v4
         with:
-          name: vcam-x64
-          path: dist/**
+          name: VCam-Setup
+          path: release/VCam-Setup-*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VCam-portable
+          path: release/VCam-*-portable-x64.zip
+          if-no-files-found: error
+
+  # Every pull request from this repository gets a downloadable build: a
+  # prerelease named pr-<number>, refreshed on each push, linked from a
+  # comment. Pushes to the default branch (merged pull requests) publish a
+  # numbered release.
+  release:
+    needs: [core-linux, windows]
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.windows.outputs.version }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ls -l release
+          setup="VCam-Setup-$VERSION.exe"
+          portable="VCam-$VERSION-portable-x64.zip"
+          short="${HEAD_SHA:0:7}"
+          if [ -n "$PR_NUMBER" ]; then
+            tag="pr-$PR_NUMBER"
+            notes="Test build of pull request #$PR_NUMBER at $short ([build log]($RUN_URL)).
+
+          Run **$setup** to install or upgrade VCam. It is not code-signed, so Windows SmartScreen may warn: choose *More info*, then *Run anyway*. The portable zip holds the same files; run \`vcam install\` from it as administrator."
+            gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+            gh release create "$tag" release/* --prerelease --target "$HEAD_SHA" \
+              --title "VCam $VERSION (PR #$PR_NUMBER: $PR_TITLE)" --notes "$notes"
+            base="https://github.com/$GH_REPO/releases/download/$tag"
+            marker="<!-- vcam-pr-build -->"
+            body="$marker
+          **VCam build for this pull request** ($short)
+
+          - Setup: [$setup]($base/$setup)
+          - Portable: [$portable]($base/$portable)
+
+          Updated on every push. The build is not code-signed: if SmartScreen warns, choose *More info*, then *Run anyway*."
+            id=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate \
+                   --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1 || true)
+            if [ -n "$id" ]; then
+              gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -f body="$body" > /dev/null
+            else
+              gh pr comment "$PR_NUMBER" --body "$body"
+            fi
+          else
+            tag="v$VERSION"
+            gh release create "$tag" release/* --target "$HEAD_SHA" --latest \
+              --title "VCam $VERSION" --generate-notes
+          fi

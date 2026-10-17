@@ -1,0 +1,19 @@
+name: pr-release-cleanup
+
+# A closed pull request's test build is no longer needed.
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Delete the pr-${{ github.event.pull_request.number }} prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release delete "pr-${{ github.event.pull_request.number }}" --yes --cleanup-tag || true

@@ -1372,9 +1372,16 @@ void App::RestoreRunningCameras()
     const Json state = Json::Parse(LoadUiState());
     for (size_t i = 0; i < state["cameras"].size() && static_cast<int>(i) < config_.cameras; i++) {
         const Json& c = state["cameras"][i];
-        if (c["running"].boolean() && c["source"]["kind"].string() != "window") {
-            StartCamera(static_cast<int>(i), c["source"], c["options"]);
+        if (!c["running"].boolean()) {
+            continue;
         }
+        if (c["source"]["kind"].string() == "window") {
+            // Windows do not survive a restart; the page offers to pick it again.
+            cameras_[i].ended = true;
+            cameras_[i].error = "Pick the window to share again.";
+            continue;
+        }
+        StartCamera(static_cast<int>(i), c["source"], c["options"]);
     }
 }
 

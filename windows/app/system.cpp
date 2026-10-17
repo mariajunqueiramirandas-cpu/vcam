@@ -579,9 +579,14 @@ int CmdInstall(const InstallOptions& options)
     MediaFoundation mf;
     VirtualCameraApi api;
     const bool mf_supported = api.available();
-    const win::Backend backend = options.backend < 0 ? (mf_supported ? win::Backend::MediaFoundation
-                                                                     : win::Backend::DirectShow)
-                                                     : static_cast<win::Backend>(options.backend);
+    win::Config previous = win::LoadConfig();
+    const bool upgrade = !previous.install_dir.empty();
+    win::Backend backend = mf_supported ? win::Backend::MediaFoundation : win::Backend::DirectShow;
+    if (options.backend >= 0) {
+        backend = static_cast<win::Backend>(options.backend);
+    } else if (upgrade && (previous.backend == win::Backend::DirectShow || mf_supported)) {
+        backend = previous.backend;  // keep what an earlier install chose
+    }
     if (backend == win::Backend::MediaFoundation && !mf_supported) {
         PrintError("Media Foundation virtual cameras need Windows 11 (build 22000 or later; this is build %lu). "
                    "Install with --backend directshow instead.\n",
@@ -589,9 +594,7 @@ int CmdInstall(const InstallOptions& options)
         return 1;
     }
 
-    win::Config previous = win::LoadConfig();
     win::Config config = previous;
-    const bool upgrade = !previous.install_dir.empty();
     const std::wstring from_dir = Directory(ExecutablePath());
     const std::wstring dir = ProgramFilesDir() + L"\\vcam";
     const wchar_t* backend_dll = backend == win::Backend::MediaFoundation ? L"vcamsource.dll" : L"vcamdshow.dll";
@@ -642,7 +645,7 @@ int CmdInstall(const InstallOptions& options)
 
     // 2. Configuration (the DirectShow filters read it while registering).
     config.install_dir = dir;
-    config.cameras = options.cameras;
+    config.cameras = options.cameras > 0 ? options.cameras : std::max(previous.cameras, 1);
     config.backend = backend;
     config.managed = options.managed;
     for (int i = 0; i < win::kMaxCameras; i++) {

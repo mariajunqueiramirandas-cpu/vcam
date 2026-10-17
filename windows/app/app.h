@@ -64,12 +64,13 @@ bool ParseInt(const std::string& text, int* value);
 // --- system management (system.cpp) -------------------------------------------------
 
 struct InstallOptions {
-    int cameras = 1;
+    int cameras = 0;                  // 0 = keep (1 on a first install)
     std::vector<std::wstring> names;  // per camera; empty = keep / default
     uint32_t max_width = 0, max_height = 0;  // 0 = keep / default
     int allow_60fps = -1;                    // -1 = keep
     bool add_to_path = true;
-    // -1: Media Foundation where Windows supports it (Windows 11), DirectShow otherwise.
+    // -1: keep; on a first install, Media Foundation where Windows supports it
+    // (Windows 11), DirectShow otherwise.
     int backend = -1;
     // Installed by the setup program: the files are already in place and it
     // owns the Installed apps entry.
