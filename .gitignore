@@ -2,3 +2,4 @@ build/
 .vs/
 out/
 *.user
+__pycache__/

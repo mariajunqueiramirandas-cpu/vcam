@@ -17,6 +17,7 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <ks.h>
+#include <ksproxy.h>  // IKsControl (ks.h only declares it for kernel mode)
 #include <ksmedia.h>
 #include <wrl/client.h>
 

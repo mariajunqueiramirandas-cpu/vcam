@@ -97,7 +97,7 @@ def _find_dll():
     if os.environ.get("VCAM_DLL"):
         candidates.append(os.environ["VCAM_DLL"])
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates += [os.path.join(here, "vcam.dll"), os.path.join(here, "..", "sdk", "vcam.dll")]
+    candidates += [os.path.join(here, "vcam.dll"), os.path.join(here, "..", "vcam.dll")]
     if sys.platform == "win32":
         try:
             import winreg
