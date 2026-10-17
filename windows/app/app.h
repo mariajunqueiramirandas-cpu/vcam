@@ -1,0 +1,154 @@
+// The vcam command-line tool: installs and manages the cameras, and feeds
+// them from built-in sources (test pattern, colour, image, video, webcam,
+// screen, window).
+#pragma once
+
+#include "common.h"
+
+#include <atomic>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "vcam.h"
+#include "vcam/convert.h"
+
+namespace vcam::app {
+
+// --- console output ---------------------------------------------------------------
+
+void Print(const char* format, ...);
+void PrintError(const char* format, ...);
+std::string Utf8(const std::wstring& text);
+std::wstring Wide(const std::string& text);
+std::string ErrorText(DWORD error);
+std::string HresultText(HRESULT hr);
+
+// Set by Ctrl+C / closing the console.
+extern std::atomic<bool> g_stop;
+void InstallStopHandler();
+
+bool IsElevated();
+bool RequireElevation(const char* what);
+
+// --- command line -------------------------------------------------------------------
+
+class Args {
+public:
+    Args(int argc, wchar_t** argv);
+    bool empty() const { return pos_ >= items_.size(); }
+    std::string Next();                        // next positional argument ("" if none)
+    bool Flag(const char* name);               // removes --name if present
+    bool Value(const char* name, std::string* value);  // removes --name VALUE / --name=VALUE
+    // Everything that was not consumed; reports leftovers as errors.
+    bool Finish();
+
+private:
+    std::vector<std::string> items_;
+    std::vector<bool> used_;
+    size_t pos_ = 0;
+};
+
+bool ParseColor(const std::string& text, Rgb* color);
+bool ParseInt(const std::string& text, int* value);
+
+// --- system management (system.cpp) -------------------------------------------------
+
+struct InstallOptions {
+    int cameras = 1;
+    std::vector<std::wstring> names;  // per camera; empty = keep / default
+    uint32_t max_width = 0, max_height = 0;  // 0 = keep / default
+    int allow_60fps = -1;                    // -1 = keep
+    bool add_to_path = true;
+};
+
+int CmdInstall(const InstallOptions& options);
+int CmdUninstall();
+int CmdStatus();
+int CmdConfig(Args& args);
+int CmdPlaceholder(Args& args);
+int CmdRestartFrameServer();
+int CmdAutostart(Args& args, int argc, wchar_t** argv);
+
+// Re-creates any registered camera Windows lost (needs elevation; quiet otherwise).
+void EnsureCamerasRegistered();
+
+// --- frame sources ---------------------------------------------------------------------
+
+// What the camera currently streams; 0 when no application has asked yet.
+struct Target {
+    int width = 0, height = 0;
+    double fps = 0;
+    PixelFormat format = PixelFormat::Unknown;
+};
+
+struct Frame {
+    PixelFormat format = PixelFormat::Unknown;
+    int width = 0, height = 0;
+    const uint8_t* planes[3] = {};
+    int pitches[3] = {};
+    ColorSpace colorspace = ColorSpace::Bt601Limited;
+    int64_t timestamp = 0;  // QPC ticks, 0 = now
+};
+
+class Source {
+public:
+    virtual ~Source() = default;
+    virtual const char* name() const = 0;
+    // Opens devices/files. On failure, *error says why.
+    virtual bool Start(std::string* error) = 0;
+    // Produces the next frame, blocking for at most ~timeout_ms. Returns false
+    // when there is no frame this time (timeout); *ended is set at end of input.
+    // The frame stays valid until the next call.
+    virtual bool Next(const Target& target, int timeout_ms, Frame* frame, bool* ended) = 0;
+    // A source whose picture never changes: sent once, and again when the
+    // camera's format changes.
+    virtual bool IsStatic() const { return false; }
+    // Sources that pace themselves (capture, video) return true; generated ones
+    // are paced by the loop at the target frame rate.
+    virtual bool SelfPaced() const { return false; }
+    // Stop/restart capture while no application watches.
+    virtual void Pause() {}
+    virtual void Resume() {}
+};
+
+struct SourceOptions {
+    int camera = 1;
+    ScaleMode scale = ScaleMode::Fit;
+    bool mirror = false;
+    bool flip = false;
+    Rgb background;
+    double fps = 0;          // 0: follow the camera
+    int width = 0, height = 0;  // render size for generated sources; 0: follow the camera
+    bool cursor = true;
+    bool loop = true;
+    bool always = false;     // keep producing while nobody watches
+    bool quiet = false;
+};
+
+std::unique_ptr<Source> MakeBarsSource(const SourceOptions& options);
+std::unique_ptr<Source> MakeColorSource(Rgb color);
+std::unique_ptr<Source> MakeImageSource(const std::wstring& path);
+std::unique_ptr<Source> MakeVideoSource(const std::wstring& path, bool loop);
+std::unique_ptr<Source> MakeWebcamSource(const std::string& selector);
+std::unique_ptr<Source> MakeScreenSource(int monitor, bool cursor);
+std::unique_ptr<Source> MakeWindowSource(const std::string& title, bool cursor);
+// Screen/window capture scales on the GPU, so it needs the placement up front.
+void ConfigureCapture(Source& source, ScaleMode scale, Rgb background);
+
+int RunSource(Source& source, const SourceOptions& options);
+int CmdList();
+
+// Loads any image WIC can decode as top-down BGRA, applying EXIF orientation.
+bool LoadImageBgra(const std::wstring& path, std::vector<uint8_t>* pixels, int* width, int* height,
+                   std::string* error);
+
+// Physical cameras (excluding vcam's own), for `list` and the webcam source.
+struct CameraInfo {
+    std::wstring name;
+    std::wstring symbolic_link;
+    bool is_vcam = false;
+};
+std::vector<CameraInfo> EnumerateCameras();
+
+}  // namespace vcam::app
