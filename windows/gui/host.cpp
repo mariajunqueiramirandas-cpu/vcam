@@ -364,6 +364,9 @@ int App::Run(HINSTANCE instance, const std::wstring& install_name, bool backgrou
     if (config_.install_dir.empty() || !install_name.empty()) {
         background = false;
     }
+    if (!config_.install_dir.empty() && elevated_) {
+        worker_.Post([] { app::EnsureCamerasRegistered(); });  // Windows sometimes drops cameras
+    }
     RestoreRunningCameras();
     if (!background) {
         ShowWindowNow();
